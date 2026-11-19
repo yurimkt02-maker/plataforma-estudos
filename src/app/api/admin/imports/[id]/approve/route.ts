@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireApiAdmin } from "@/lib/auth/api-guard";
 import { isDatabaseConfigured, prisma } from "@/lib/db/prisma";
+import {
+  evaluateItemPublishEligibility,
+  type ImportItemReviewState,
+} from "@/features/imports/pipeline";
 import { logger } from "@/lib/utils/logger";
 
 export const runtime = "nodejs";
@@ -15,6 +19,10 @@ type StructuredItemPayload = {
   officialAnswer: string;
   isAnnulled?: boolean;
   subjectSlug: string;
+  classificationStatus?: "CLASSIFIED" | "CLASSIFICATION_PENDING";
+  hasMissingVisualOrTable?: boolean;
+  answerKeyVerified?: boolean;
+  reviewState?: ImportItemReviewState;
   pageNumber?: number;
   canonicalHash: string;
 };
@@ -40,6 +48,8 @@ export async function POST(
   const job = await prisma.importJob.findUnique({
     where: { id },
     include: {
+      examPdfDocument: true,
+      answerKeyDocument: true,
       items: { orderBy: { originalNumber: "asc" } },
     },
   });
@@ -58,25 +68,74 @@ export async function POST(
     });
   }
 
-  const validItems = job.items.filter((i) => i.validationStatus === "VERIFIED");
-  if (validItems.length === 0) {
+  const examDocStatus = job.examPdfDocument.verificationStatus;
+  const keyDocStatus = job.answerKeyDocument?.verificationStatus ?? "PENDING";
+
+  if (examDocStatus !== "VERIFIED" || keyDocStatus !== "VERIFIED") {
     return NextResponse.json(
       {
-        error: "NO_VALID_ITEMS",
+        error: "DOCUMENTS_NOT_VERIFIED",
         message:
-          "Nenhum item deste job passou na validação de integridade documental (Seção 9.5). Corrija os itens antes de publicar.",
+          "Confirme primeiro os documentos oficiais (edição, data de aplicação, versão do caderno e integridade do gabarito definitivo) antes de publicar qualquer questão.",
       },
       { status: 422 }
     );
   }
 
+  const eligibleItems: typeof job.items = [];
+  const blockedItems: Array<{ originalNumber: number; reasons: string[] }> = [];
+
+  for (const item of job.items) {
+    const payload =
+      (item.structuredPayloadJson as unknown as StructuredItemPayload) ?? {};
+    const check = evaluateItemPublishEligibility({
+      originalNumber: item.originalNumber,
+      questionType: payload.questionType ?? "MULTIPLE_CHOICE",
+      statement: payload.statement ?? "",
+      options: payload.options ?? [],
+      officialAnswer: payload.officialAnswer ?? item.detectedAnswerKey ?? "",
+      isAnnulled: payload.isAnnulled,
+      subjectSlug: payload.subjectSlug ?? "",
+      classificationStatus: payload.classificationStatus,
+      hasMissingVisualOrTable: payload.hasMissingVisualOrTable,
+      answerKeyVerified: payload.answerKeyVerified,
+      reviewState: payload.reviewState,
+      validationStatus: item.validationStatus,
+      reviewedAt: item.reviewedAt,
+      examDocVerificationStatus: examDocStatus,
+      answerKeyDocVerificationStatus: keyDocStatus,
+    });
+
+    if (check.eligible) {
+      eligibleItems.push(item);
+    } else {
+      blockedItems.push({
+        originalNumber: item.originalNumber,
+        reasons: check.blockingReasons,
+      });
+    }
+  }
+
+  if (eligibleItems.length === 0) {
+    return NextResponse.json(
+      {
+        error: "NO_VERIFIED_ITEMS",
+        message:
+          "Nenhum item deste lote foi explicitamente verificado e aprovado por um revisor humano (estado VERIFIED com disciplina, visual e gabarito conferidos).",
+        blockedItems: blockedItems.slice(0, 10),
+      },
+      { status: 422 }
+    );
+  }
+
+  const publishedAt = new Date();
+
   const publishedJob = await prisma.$transaction(async (tx) => {
     let publishedCount = 0;
 
-    for (const item of validItems) {
+    for (const item of eligibleItems) {
       const payload = item.structuredPayloadJson as unknown as StructuredItemPayload;
 
-      // Deduplicação por canonicalHash: reutiliza a Question se já existir em outra versão de caderno
       let question = await tx.question.findUnique({
         where: { canonicalHash: payload.canonicalHash },
       });
@@ -91,8 +150,8 @@ export async function POST(
             status: "PUBLISHED",
             difficulty: "MEDIUM",
             canonicalHash: payload.canonicalHash,
-            validatedAt: new Date(),
-            publishedAt: new Date(),
+            validatedAt: publishedAt,
+            publishedAt,
             options: {
               create: payload.options.map((opt, index) => ({
                 label: opt.label.trim().toUpperCase(),
@@ -104,7 +163,6 @@ export async function POST(
         });
       }
 
-      // Vincula ao documento de origem oficial com número de página
       await tx.questionSource.upsert({
         where: {
           questionId_sourceDocumentId: {
@@ -124,7 +182,6 @@ export async function POST(
         },
       });
 
-      // Vincula à disciplina/assunto
       const subject = await tx.subject.findUnique({
         where: { slug: payload.subjectSlug },
       });
@@ -146,7 +203,6 @@ export async function POST(
         });
       }
 
-      // Registra a instância na versão específica do caderno (ExamForm)
       const instance = await tx.examQuestionInstance.upsert({
         where: {
           examFormId_originalNumber: {
@@ -167,7 +223,6 @@ export async function POST(
         },
       });
 
-      // Cria a revisão oficial do gabarito sem sobrescrever histórico
       const existingKeysCount = await tx.officialAnswerKey.count({
         where: { examQuestionInstanceId: instance.id },
       });
@@ -185,22 +240,20 @@ export async function POST(
 
       await tx.importJobItem.update({
         where: { id: item.id },
-        data: {
-          questionId: question.id,
-          reviewedAt: new Date(),
-        },
+        data: { questionId: question.id },
       });
 
       publishedCount += 1;
     }
 
+    const allResolved = blockedItems.length === 0;
     const updated = await tx.importJob.update({
       where: { id: job.id },
       data: {
-        status: "PUBLISHED",
-        currentStage: "PUBLISHED",
+        status: allResolved ? "PUBLISHED" : "AWAITING_REVIEW",
+        currentStage: allResolved ? "PUBLISHED" : "AWAITING_REVIEW",
         totalPublished: publishedCount,
-        finishedAt: new Date(),
+        finishedAt: allResolved ? publishedAt : null,
       },
     });
 
@@ -208,10 +261,17 @@ export async function POST(
       data: {
         entityType: "IMPORT_JOB",
         entityId: job.id,
-        action: "IMPORT_JOB_APPROVED_AND_PUBLISHED",
+        action: "IMPORT_JOB_PUBLISHED_VERIFIED_ONLY",
         previousStatus: job.status,
-        newStatus: "PUBLISHED",
-        notes: `${publishedCount} questões oficiais validadas e publicadas no acervo.`,
+        newStatus: updated.status,
+        notes: `${publishedCount} questão(ões) verificadas publicadas por ${auth.user.name} (${auth.user.email}) em ${publishedAt.toISOString()}. ${blockedItems.length} item(ns) mantido(s) fora da publicação por pendências.`,
+        metadataJson: {
+          approvedByUserId: auth.user.id,
+          approvedByEmail: auth.user.email,
+          approvedAt: publishedAt.toISOString(),
+          publishedCount,
+          blockedCount: blockedItems.length,
+        },
         reviewerUserId: auth.user.id,
       },
     });
@@ -222,10 +282,14 @@ export async function POST(
   logger.info("IMPORT_JOB_PUBLISHED", {
     jobId: publishedJob.id,
     totalPublished: publishedJob.totalPublished,
+    blockedCount: blockedItems.length,
   });
 
   return NextResponse.json({
     published: true,
+    publishedCount: publishedJob.totalPublished,
+    blockedCount: blockedItems.length,
+    blockedItems,
     job: publishedJob,
   });
 }

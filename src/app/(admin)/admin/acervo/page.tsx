@@ -15,9 +15,42 @@ import {
 import { requireAdminAuth } from "@/lib/auth/session";
 import { getAdminInventoryMetrics } from "@/features/imports/admin-metrics";
 
-export default async function AdminInventoryDashboardPage() {
+export default async function AdminInventoryDashboardPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ track?: string; year?: string; status?: string }>;
+}) {
   await requireAdminAuth();
+  const params = await searchParams;
   const metrics = await getAdminInventoryMetrics();
+
+  const filterTrack = (params.track ?? "").toUpperCase();
+  const filterYear = params.year ?? "";
+  const filterStatus = (params.status ?? "").toUpperCase();
+
+  // Progresso real da meta OAB 2023–2026 (11 edições / 880 itens)
+  const oab2326Exams = metrics.byExam.filter(
+    (e) =>
+      e.trackCode === "OAB" &&
+      e.examDate !== null &&
+      Number(e.examDate.slice(0, 4)) >= 2023 &&
+      Number(e.examDate.slice(0, 4)) <= 2026
+  );
+  const oabPublished = oab2326Exams.reduce((acc, e) => acc + e.publishedQuestions, 0);
+  const oabPending = oab2326Exams.reduce((acc, e) => acc + e.awaitingReviewQuestions, 0);
+  const oabCompleteEditions = oab2326Exams.filter(
+    (e) => e.completenessStatus === "COMPLETE"
+  ).length;
+  const oabGoalTotal = 880;
+  const oabGoalEditions = 11;
+  const oabPercent = Math.min(100, Number(((oabPublished / oabGoalTotal) * 100).toFixed(1)));
+
+  const filteredExams = metrics.byExam.filter((ex) => {
+    if (filterTrack && ex.trackCode !== filterTrack) return false;
+    if (filterYear && !(ex.examDate ?? "").startsWith(filterYear)) return false;
+    if (filterStatus && ex.completenessStatus !== filterStatus) return false;
+    return true;
+  });
 
   return (
     <div className="space-y-8">
@@ -102,19 +135,108 @@ export default async function AdminInventoryDashboardPage() {
         </div>
       </section>
 
-      {/* Provas Completas vs Parciais e Percentual de Extração */}
+      {/* Progresso da Expansão — Meta OAB 2023–2026 (880 itens / 11 edições) */}
+      <section className="bg-surface border border-border rounded-lg p-6 shadow-card space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-border">
+          <div>
+            <h3 className="font-display text-sm font-semibold text-foreground">
+              Progresso da Expansão — OAB 1ª Fase (2023–2026)
+            </h3>
+            <p className="text-[11px] text-muted">
+              Acompanhamento em tempo real no Prisma Postgres (37º ao 47º Exames · Meta: {oabGoalTotal} itens)
+            </p>
+          </div>
+          <span className="px-2.5 py-1 rounded bg-navy text-white text-xs font-semibold">
+            {oabPublished} / {oabGoalTotal} ({oabPercent}%)
+          </span>
+        </div>
+
+        <div className="w-full h-2.5 rounded-full bg-border overflow-hidden">
+          <div
+            className="h-full bg-semantic-success transition-all"
+            style={{ width: `${oabPercent}%` }}
+          />
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-xs">
+          <div className="p-3 rounded bg-background border border-border">
+            <span className="text-muted block text-[11px]">Meta 2023–2026</span>
+            <strong className="font-display text-base text-foreground">{oabGoalTotal} itens</strong>
+          </div>
+          <div className="p-3 rounded bg-background border border-border">
+            <span className="text-muted block text-[11px]">Publicados</span>
+            <strong className="font-display text-base text-semantic-success">{oabPublished}</strong>
+          </div>
+          <div className="p-3 rounded bg-background border border-border">
+            <span className="text-muted block text-[11px]">Em Revisão</span>
+            <strong className="font-display text-base text-semantic-warning">{oabPending}</strong>
+          </div>
+          <div className="p-3 rounded bg-background border border-border">
+            <span className="text-muted block text-[11px]">Edições Completas</span>
+            <strong className="font-display text-base text-foreground">
+              {oabCompleteEditions} / {oabGoalEditions}
+            </strong>
+          </div>
+          <div className="p-3 rounded bg-background border border-border">
+            <span className="text-muted block text-[11px]">Edições Restantes</span>
+            <strong className="font-display text-base text-foreground">
+              {Math.max(0, oabGoalEditions - oabCompleteEditions)}
+            </strong>
+          </div>
+        </div>
+      </section>
+
+      {/* Provas Completas vs Parciais e Percentual de Extração com Filtros */}
       <section className="bg-surface border border-border rounded-lg p-6 shadow-card space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-border">
           <div className="flex items-center gap-2">
             <Layers className="w-4 h-4 text-navy" />
             <h3 className="font-display text-sm font-semibold text-foreground">
-              Completude por Prova Oficial (Completas vs. Parciais)
+              Completude por Prova Oficial ({filteredExams.length} exibidas)
             </h3>
           </div>
-          <span className="text-xs text-muted">
-            Completas: {metrics.totals.completeExamsCount} · Parciais:{" "}
-            {metrics.totals.partialExamsCount}
-          </span>
+          <form method="GET" className="flex flex-wrap items-center gap-2 text-xs">
+            <select
+              name="track"
+              defaultValue={filterTrack}
+              className="h-8 px-2 rounded border border-border bg-background text-xs"
+            >
+              <option value="">Todas Carreiras</option>
+              <option value="OAB">OAB</option>
+              <option value="PRF">PRF</option>
+              <option value="TJSP">TJSP</option>
+              <option value="PCSP">PCSP</option>
+            </select>
+            <select
+              name="year"
+              defaultValue={filterYear}
+              className="h-8 px-2 rounded border border-border bg-background text-xs"
+            >
+              <option value="">Todos Anos</option>
+              <option value="2026">2026</option>
+              <option value="2025">2025</option>
+              <option value="2024">2024</option>
+              <option value="2023">2023</option>
+              <option value="2021">2021</option>
+              <option value="2019">2019</option>
+            </select>
+            <select
+              name="status"
+              defaultValue={filterStatus}
+              className="h-8 px-2 rounded border border-border bg-background text-xs"
+            >
+              <option value="">Todos Status</option>
+              <option value="COMPLETE">Completas</option>
+              <option value="PARTIAL">Parciais</option>
+              <option value="EMPTY">Aguardando PDF</option>
+            </select>
+            <button
+              type="submit"
+              className="h-8 px-3 rounded bg-navy text-white text-xs font-medium"
+            >
+              Filtrar
+            </button>
+          </form>
         </div>
 
         <div className="overflow-x-auto">
@@ -131,7 +253,7 @@ export default async function AdminInventoryDashboardPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {metrics.byExam.map((ex) => (
+              {filteredExams.map((ex) => (
                 <tr key={ex.editionId}>
                   <td className="py-2.5 pr-3">
                     <span className="font-semibold text-foreground block">

@@ -1009,3 +1009,20 @@ model LegalUpdateCheck {
 
   @@index([legalSourceId, checkedAt])
 }
+
+// ==============================================================================
+// 6.8 ARMAZENAMENTO PRIVADO PERSISTENTE DE DOCUMENTOS OFICIAIS (PDFs)
+// ==============================================================================
+
+model StoredDocumentFile {
+  id          String   @id @default(uuid()) @db.Uuid
+  sha256      String   @unique
+  fileName    String
+  mimeType    String   @default("application/pdf")
+  sizeBytes   Int
+  content     Bytes
+  uploadedBy  String?  @db.Uuid
+  createdAt   DateTime @default(now())
+
+  @@index([createdAt])
+}

@@ -1,5 +1,7 @@
 import { extractText } from "unpdf";
 
+export const CLASSIFICATION_PENDING_SLUG = "CLASSIFICATION_PENDING";
+
 export type ParsedPdfQuestionItem = {
   originalNumber: number;
   questionType: "MULTIPLE_CHOICE" | "TRUE_FALSE";
@@ -9,6 +11,9 @@ export type ParsedPdfQuestionItem = {
   officialAnswer: string;
   isAnnulled: boolean;
   subjectSlug: string;
+  classificationStatus: "CLASSIFIED" | "CLASSIFICATION_PENDING";
+  hasMissingVisualOrTable: boolean;
+  visualWarning?: string;
   pageNumber: number;
 };
 
@@ -16,8 +21,12 @@ export type ParsedPdfQuestionItem = {
  * Extrai texto página a página de um buffer PDF usando unpdf (compatível com Vercel Serverless).
  */
 export async function extractPdfPages(buffer: ArrayBuffer | Uint8Array): Promise<string[]> {
-  const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
-  const { text } = await extractText(bytes, { mergePages: false });
+  const source = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+  // Cria uma cópia isolada com ArrayBuffer próprio para evitar que o pdf.js (unpdf)
+  // desanexe (detach) o ArrayBuffer compartilhado do pool do Node.js ou o Buffer original.
+  const isolatedCopy = new Uint8Array(source.byteLength);
+  isolatedCopy.set(source);
+  const { text } = await extractText(isolatedCopy, { mergePages: false });
   return Array.isArray(text) ? text : [String(text ?? "")];
 }
 
@@ -34,7 +43,6 @@ export function parseAnswerKeyText(
 ): Record<number, { answerValue: string; isAnnulled: boolean }> {
   let section = rawText;
 
-  // Se houver indicação de versão/tipo (ex.: "Tipo 1" ou "Versão 1"), isolar a seção correspondente
   if (versionHint) {
     const tipoMatch = versionHint.match(/tipo\s*(\d+)/i);
     const versaoMatch = versionHint.match(/vers[aã]o\s*(\d+)/i);
@@ -66,7 +74,6 @@ export function parseAnswerKeyText(
     return { answerValue: up, isAnnulled: false };
   };
 
-  // Estratégia 1: pares explícitos "01 - A", "12. B", "30 - ANULADA", "01: D"
   const pairRegex =
     /(?:^|[\s,;])0?(\d{1,3})\s*[-.:–—]\s*(ANULAD[AO]|[*X]|[A-E])\b/gi;
   let match: RegExpExecArray | null;
@@ -78,7 +85,6 @@ export function parseAnswerKeyText(
     }
   }
 
-  // Estratégia 2: grade tabular (Vunesp / FGV / Cebraspe: sequência de números seguida de sequência de letras)
   if (Object.keys(result).length < 5) {
     const tokens = section
       .split(/[\s\r\n\t]+/)
@@ -118,10 +124,14 @@ export function parseAnswerKeyText(
 }
 
 /**
- * Classifica uma disciplina inicial confiável a partir de palavras-chave jurídicas/gramaticais,
- * garantindo que nenhuma questão fique sem disciplina na prévia.
+ * Classifica disciplina SOMENTE quando há correspondência explícita e inequívoca no texto.
+ * Jamais atribui disciplina genérica por carreira (PRF, OAB, TJSP ou PCSP).
+ * Quando não há correspondência explícita, retorna CLASSIFICATION_PENDING para classificação humana.
  */
-export function inferSubjectSlugFromText(statement: string, trackCode?: string): string {
+export function inferSubjectSlugFromText(statement: string): {
+  subjectSlug: string;
+  classificationStatus: "CLASSIFIED" | "CLASSIFICATION_PENDING";
+} {
   const lower = statement.toLowerCase();
 
   if (
@@ -130,112 +140,140 @@ export function inferSubjectSlugFromText(statement: string, trackCode?: string):
     lower.includes("saj/pg") ||
     lower.includes("ofício de justiça")
   ) {
-    return "sistema-informatizado-oficial-nscgj";
+    return {
+      subjectSlug: "sistema-informatizado-oficial-nscgj",
+      classificationStatus: "CLASSIFIED",
+    };
   }
   if (lower.includes("10.261") || lower.includes("estatuto dos funcionários públicos")) {
-    return "estatuto-funcionarios-publicos-sp-lei-10261";
+    return {
+      subjectSlug: "estatuto-funcionarios-publicos-sp-lei-10261",
+      classificationStatus: "CLASSIFIED",
+    };
   }
   if (lower.includes("8.429") || lower.includes("improbidade administrativa")) {
-    return "improbidade-administrativa-lei-8429";
+    return {
+      subjectSlug: "improbidade-administrativa-lei-8429",
+      classificationStatus: "CLASSIFIED",
+    };
   }
   if (
     lower.includes("9.099") ||
     lower.includes("12.153") ||
     lower.includes("juizado especial")
   ) {
-    return "juizados-especiais-civeis-e-fazenda-publica";
+    return {
+      subjectSlug: "juizados-especiais-civeis-e-fazenda-publica",
+      classificationStatus: "CLASSIFIED",
+    };
+  }
+  if (lower.includes("inquérito policial")) {
+    return { subjectSlug: "inquerito-policial", classificationStatus: "CLASSIFIED" };
   }
   if (
-    lower.includes("citação") ||
-    lower.includes("intimação") ||
-    lower.includes("processo penal") ||
-    lower.includes("inquérito policial")
+    (lower.includes("citação") || lower.includes("intimação")) &&
+    lower.includes("processo penal")
   ) {
-    return lower.includes("inquérito") ? "inquerito-policial" : "citacoes-e-intimacoes-cpp";
+    return {
+      subjectSlug: "citacoes-e-intimacoes-cpp",
+      classificationStatus: "CLASSIFIED",
+    };
   }
   if (
     lower.includes("peculato") ||
     lower.includes("concussão") ||
-    lower.includes("corrupção") ||
+    lower.includes("corrupção passiva") ||
     lower.includes("prevaricação") ||
     lower.includes("art. 312") ||
     lower.includes("artigo 316")
   ) {
-    return "crimes-contra-a-administracao-publica";
+    return {
+      subjectSlug: "crimes-contra-a-administracao-publica",
+      classificationStatus: "CLASSIFIED",
+    };
   }
   if (
-    lower.includes("falsificação") ||
-    lower.includes("falsidade") ||
+    lower.includes("petrechos de falsificação") ||
+    lower.includes("falsidade documental") ||
     lower.includes("fé pública") ||
     lower.includes("artigo 294")
   ) {
-    return "crimes-contra-a-fe-publica";
-  }
-  if (
-    lower.includes("código penal") ||
-    lower.includes("crime") ||
-    lower.includes("dolo") ||
-    lower.includes("culpa")
-  ) {
-    return "teoria-do-crime-e-imputabilidade";
-  }
-  if (
-    lower.includes("constituição federal") ||
-    lower.includes("direito fundamental") ||
-    lower.includes("habeas") ||
-    lower.includes("art. 5º") ||
-    lower.includes("nacionalidade")
-  ) {
-    return "direitos-e-garantias-fundamentais";
-  }
-  if (
-    lower.includes("administração pública") ||
-    lower.includes("servidor público") ||
-    lower.includes("ato administrativo") ||
-    lower.includes("licitação")
-  ) {
-    return "atos-e-poderes-administrativos";
+    return {
+      subjectSlug: "crimes-contra-a-fe-publica",
+      classificationStatus: "CLASSIFIED",
+    };
   }
   if (
     lower.includes("estatuto da advocacia") ||
-    lower.includes("8.906") ||
-    lower.includes("conselho seccional")
+    lower.includes("lei nº 8.906") ||
+    lower.includes("conselho seccional da oab")
   ) {
-    return "direitos-e-prerrogativas-do-advogado";
+    return {
+      subjectSlug: "direitos-e-prerrogativas-do-advogado",
+      classificationStatus: "CLASSIFIED",
+    };
   }
   if (
+    lower.includes("código de trânsito brasileiro") ||
     lower.includes("ctb") ||
-    lower.includes("trânsito") ||
-    lower.includes("rodovia") ||
-    lower.includes("condutor")
+    lower.includes("resolução contran")
   ) {
-    return "normas-gerais-de-circulacao-e-conduta";
+    return {
+      subjectSlug: "normas-gerais-de-circulacao-e-conduta",
+      classificationStatus: "CLASSIFIED",
+    };
   }
   if (
-    lower.includes("regência") ||
-    lower.includes("concordância") ||
-    lower.includes("crase") ||
-    lower.includes("norma-padrão")
+    lower.includes("regência nominal") ||
+    lower.includes("regência verbal") ||
+    lower.includes("concordância verbal") ||
+    lower.includes("concordância nominal")
   ) {
-    return "concordancia-e-regencia";
+    return {
+      subjectSlug: "concordancia-e-regencia",
+      classificationStatus: "CLASSIFIED",
+    };
   }
 
-  if (trackCode === "PRF") return "normas-gerais-de-circulacao-e-conduta";
-  if (trackCode === "OAB") return "direitos-e-garantias-fundamentais";
-  return "interpretacao-e-compreensao-de-textos";
+  return {
+    subjectSlug: CLASSIFICATION_PENDING_SLUG,
+    classificationStatus: "CLASSIFICATION_PENDING",
+  };
+}
+
+/**
+ * Detecta referências a figuras, tabelas, gráficos, charges ou tirinhas no enunciado/opções.
+ * Como a extração textual pura não recorta imagens/tabelas automaticamente, itens com essas
+ * referências são obrigatoriamente sinalizados para revisão humana comparativa com o PDF.
+ */
+export function detectMissingVisualOrTable(text: string): {
+  hasMissingVisualOrTable: boolean;
+  visualWarning?: string;
+} {
+  const match = text.match(
+    /\b(figura\s*(?:a seguir|abaixo|seguinte|precedente|acima|\d+)?|imagem\s*(?:abaixo|a seguir|seguinte)?|gr[aá]fico|tabela\s*(?:a seguir|abaixo|seguinte|\d+)?|quadro\s*(?:a seguir|abaixo|seguinte)|charge|tirinha|tira\s+de|mapa\s*(?:a seguir|abaixo)?|esquema\s*(?:a seguir|abaixo)|diagrama|ilustra[çc][ãa]o|observe\s+a\s+figura)\b/i
+  );
+
+  if (match) {
+    return {
+      hasMissingVisualOrTable: true,
+      visualWarning: `Referência visual/tabular detectada ("${match[0]}"). Confira o PDF original e anexe/verifique a imagem ou tabela antes de aprovar.`,
+    };
+  }
+
+  return { hasMissingVisualOrTable: false };
 }
 
 /**
  * Extrai questões estruturadas (múltipla escolha Vunesp/FGV ou Certo/Errado Cebraspe)
- * a partir do texto das páginas do PDF da prova + mapa de gabarito oficial.
+ * preservando textos de apoio compartilhados e sinalizando itens visuais ou sem disciplina.
  */
 export function parseExamBookletText(params: {
   pages: string[];
   answerMap: Record<number, { answerValue: string; isAnnulled: boolean }>;
   questionType: "MULTIPLE_CHOICE" | "TRUE_FALSE";
-  trackCode?: string;
 }): ParsedPdfQuestionItem[] {
-  const { pages, answerMap, questionType, trackCode } = params;
+  const { pages, answerMap, questionType } = params;
 
   const orderedLines: Array<{ pageNumber: number; text: string }> = [];
   for (let p = 0; p < pages.length; p++) {
@@ -254,7 +292,6 @@ export function parseExamBookletText(params: {
     .map(Number)
     .sort((a, b) => a - b);
 
-  // Detectar início de cada questão
   const starts: Array<{
     num: number;
     lineIdx: number;
@@ -263,7 +300,6 @@ export function parseExamBookletText(params: {
   }> = [];
 
   if (answerNums.length > 0) {
-    // Busca sequencial guiada pelo gabarito oficial (evita falsos positivos com números no meio do texto)
     let searchFrom = 0;
     for (const num of answerNums) {
       const numPadded = num < 10 ? `0?${num}` : `${num}`;
@@ -273,7 +309,6 @@ export function parseExamBookletText(params: {
       );
       const standaloneRe = new RegExp(`^(?:QUEST[ÃA]O\\s+)?${numPadded}$`, "i");
 
-      let found = false;
       for (let k = searchFrom; k < orderedLines.length; k++) {
         const line = orderedLines[k]!;
         if (standaloneRe.test(line.text)) {
@@ -284,7 +319,6 @@ export function parseExamBookletText(params: {
             firstLineBody: "",
           });
           searchFrom = k + 1;
-          found = true;
           break;
         }
         const m = line.text.match(explicitRe);
@@ -298,17 +332,12 @@ export function parseExamBookletText(params: {
               firstLineBody: body,
             });
             searchFrom = k + 1;
-            found = true;
             break;
           }
         }
       }
-      if (!found) {
-        // fallback: não avançar searchFrom se o item não foi encontrado
-      }
     }
   } else {
-    // Fallback sem gabarito: detectar cabeçalhos "QUESTÃO N"
     const qHeaderRe = /^QUEST[ÃA]O\s+0?(\d{1,3})\s*[-.):–—]?\s*(.*)$/i;
     for (let k = 0; k < orderedLines.length; k++) {
       const line = orderedLines[k]!;
@@ -326,16 +355,44 @@ export function parseExamBookletText(params: {
 
   const optRegex = /^\(?([A-E])\)[\s.):–—-]+(.*)$/;
   const optRegexAlt = /^([A-E])[.)]\s+(.*)$/;
+  const supportHeaderRe =
+    /^(Leia o texto|Texto\s+(?:de apoio|base|para as quest[õo]es|\d+|[IVX]+)|Com base no texto)/i;
+
   const items: ParsedPdfQuestionItem[] = [];
+  let activeSupportText: string | undefined;
 
   for (let i = 0; i < starts.length; i++) {
     const start = starts[i]!;
-    const endLineIdx = i + 1 < starts.length ? starts[i + 1]!.lineIdx : orderedLines.length;
+    const prevEnd = i > 0 ? starts[i - 1]!.lineIdx + 1 : 0;
+    if (start.lineIdx > prevEnd) {
+      const between = orderedLines
+        .slice(prevEnd, start.lineIdx)
+        .map((l) => l.text);
+      const supIdx = between.findIndex((t) => supportHeaderRe.test(t));
+      if (supIdx >= 0) {
+        activeSupportText = between.slice(supIdx).join(" ").trim().slice(0, 2000);
+      }
+    }
 
-    const blockLines = [
+    const endLineIdx = i + 1 < starts.length ? starts[i + 1]!.lineIdx : orderedLines.length;
+    const rawBlockLines = [
       ...(start.firstLineBody ? [start.firstLineBody] : []),
       ...orderedLines.slice(start.lineIdx + 1, endLineIdx).map((l) => l.text),
     ];
+
+    // Separar texto de apoio que pertença às próximas questões
+    const nextSupportIdx = rawBlockLines.findIndex(
+      (line, idx) => idx > 0 && supportHeaderRe.test(line)
+    );
+    const blockLines =
+      nextSupportIdx > 0 ? rawBlockLines.slice(0, nextSupportIdx) : rawBlockLines;
+    if (nextSupportIdx > 0) {
+      activeSupportText = rawBlockLines
+        .slice(nextSupportIdx)
+        .join(" ")
+        .trim()
+        .slice(0, 2000);
+    }
 
     const keyInfo = answerMap[start.num];
     const officialAnswer = keyInfo?.answerValue ?? "";
@@ -343,17 +400,23 @@ export function parseExamBookletText(params: {
 
     if (questionType === "TRUE_FALSE") {
       const statement = blockLines.join(" ").replace(/\s+/g, " ").trim();
+      const subj = inferSubjectSlugFromText(statement);
+      const vis = detectMissingVisualOrTable(statement);
       items.push({
         originalNumber: start.num,
         questionType: "TRUE_FALSE",
         statement,
+        supportText: activeSupportText,
         options: [
           { label: "C", content: "Certo" },
           { label: "E", content: "Errado" },
         ],
         officialAnswer,
         isAnnulled,
-        subjectSlug: inferSubjectSlugFromText(statement, trackCode),
+        subjectSlug: subj.subjectSlug,
+        classificationStatus: subj.classificationStatus,
+        hasMissingVisualOrTable: vis.hasMissingVisualOrTable,
+        visualWarning: vis.visualWarning,
         pageNumber: start.pageNumber,
       });
       continue;
@@ -385,14 +448,23 @@ export function parseExamBookletText(params: {
         content: optionsMap[lbl]!.join(" ").replace(/\s+/g, " ").trim(),
       }));
 
+    const subj = inferSubjectSlugFromText(statement);
+    const vis = detectMissingVisualOrTable(
+      `${statement} ${options.map((o) => o.content).join(" ")}`
+    );
+
     items.push({
       originalNumber: start.num,
       questionType: "MULTIPLE_CHOICE",
       statement,
+      supportText: activeSupportText,
       options,
       officialAnswer,
       isAnnulled,
-      subjectSlug: inferSubjectSlugFromText(statement, trackCode),
+      subjectSlug: subj.subjectSlug,
+      classificationStatus: subj.classificationStatus,
+      hasMissingVisualOrTable: vis.hasMissingVisualOrTable,
+      visualWarning: vis.visualWarning,
       pageNumber: start.pageNumber,
     });
   }

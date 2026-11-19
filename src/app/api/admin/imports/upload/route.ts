@@ -5,6 +5,7 @@ import { isDatabaseConfigured, prisma } from "@/lib/db/prisma";
 import {
   auditExamCompleteness,
   validateExtractedQuestionItem,
+  type ImportItemReviewState,
 } from "@/features/imports/pipeline";
 import {
   extractPdfPages,
@@ -190,7 +191,6 @@ export async function POST(request: NextRequest) {
       pages: examPages,
       answerMap,
       questionType,
-      trackCode: examEdition.position.studyTrack.code,
     });
 
     if (extractedItems.length === 0) {
@@ -227,12 +227,41 @@ export async function POST(request: NextRequest) {
     });
 
     const job = await prisma.$transaction(async (tx) => {
+      // 1. Armazenamento privado persistente dos PDFs originais no Prisma Postgres
+      const storedExamFile = await tx.storedDocumentFile.upsert({
+        where: { sha256: examSha },
+        update: { fileName: examFile.name },
+        create: {
+          sha256: examSha,
+          fileName: examFile.name,
+          mimeType: "application/pdf",
+          sizeBytes: examBuf.length,
+          content: examBuf,
+          uploadedBy: auth.user.id,
+        },
+      });
+
+      const storedKeyFile = await tx.storedDocumentFile.upsert({
+        where: { sha256: keySha },
+        update: { fileName: keyFile.name },
+        create: {
+          sha256: keySha,
+          fileName: keyFile.name,
+          mimeType: "application/pdf",
+          sizeBytes: keyBuf.length,
+          content: keyBuf,
+          uploadedBy: auth.user.id,
+        },
+      });
+
+      // 2. Documentos registrados como PENDING (jamais VERIFIED automaticamente só pelo upload)
       const examDoc = await tx.sourceDocument.upsert({
         where: { sha256: examSha },
         update: {
           title: `${examEdition.title} — ${examFile.name}`,
           officialUrl: examPdfOfficialUrl,
-          verificationStatus: "VERIFIED",
+          storageKey: storedExamFile.id,
+          fileSizeBytes: examBuf.length,
         },
         create: {
           examEditionId: examEdition.id,
@@ -240,13 +269,14 @@ export async function POST(request: NextRequest) {
           documentType: "EXAM_BOOKLET",
           title: `${examEdition.title} — ${examFile.name}`,
           officialUrl: examPdfOfficialUrl,
+          storageKey: storedExamFile.id,
           sha256: examSha,
           fileSizeBytes: examBuf.length,
           versionLabel: examForm.versionLabel,
           sourceDate: examEdition.examDate ?? new Date(),
           rightsNotes:
-            "PDF oficial enviado manualmente pelo proprietário via painel /admin/importacoes para uso estritamente pessoal.",
-          verificationStatus: "VERIFIED",
+            "PDF armazenado de forma privada (upload pelo proprietário). Aguarda conferência humana de edição, versão, data e gabarito.",
+          verificationStatus: "PENDING",
         },
       });
 
@@ -255,7 +285,8 @@ export async function POST(request: NextRequest) {
         update: {
           title: `Gabarito Oficial Definitivo — ${examEdition.editionCode} (${keyFile.name})`,
           officialUrl: answerKeyOfficialUrl,
-          verificationStatus: "VERIFIED",
+          storageKey: storedKeyFile.id,
+          fileSizeBytes: keyBuf.length,
         },
         create: {
           examEditionId: examEdition.id,
@@ -263,17 +294,20 @@ export async function POST(request: NextRequest) {
           documentType: "OFFICIAL_ANSWER_KEY",
           title: `Gabarito Oficial Definitivo — ${examEdition.editionCode} (${keyFile.name})`,
           officialUrl: answerKeyOfficialUrl,
+          storageKey: storedKeyFile.id,
           sha256: keySha,
           fileSizeBytes: keyBuf.length,
           versionLabel: examForm.versionLabel,
           sourceDate: examEdition.examDate ?? new Date(),
           rightsNotes:
-            "Gabarito definitivo oficial enviado manualmente pelo proprietário via painel /admin/importacoes.",
-          verificationStatus: "VERIFIED",
+            "Gabarito armazenado de forma privada. Aguarda conferência humana independente com o edital/banca.",
+          verificationStatus: "PENDING",
         },
       });
 
-      let validCount = 0;
+      // 3. Separação rigorosa: validação estrutural != VERIFIED.
+      // Nenhum item nasce VERIFIED; todos aguardam conferência humana individual.
+      let structurallyValidCount = 0;
       const itemsToCreate = extractedItems.map((rawItem) => {
         const validation = validateExtractedQuestionItem({
           originalNumber: rawItem.originalNumber,
@@ -289,7 +323,18 @@ export async function POST(request: NextRequest) {
           examFormVersionLabel: examForm.versionLabel,
         });
 
-        if (validation.isValid) validCount += 1;
+        if (validation.isValid) structurallyValidCount += 1;
+
+        const needsSpecialReview =
+          rawItem.classificationStatus === "CLASSIFICATION_PENDING" ||
+          rawItem.hasMissingVisualOrTable ||
+          !rawItem.officialAnswer;
+
+        const reviewState: ImportItemReviewState = !validation.isValid
+          ? "REJECTED"
+          : needsSpecialReview
+            ? "AWAITING_REVIEW"
+            : "STRUCTURALLY_VALID";
 
         return {
           originalNumber: rawItem.originalNumber,
@@ -297,10 +342,13 @@ export async function POST(request: NextRequest) {
           structuredPayloadJson: {
             ...rawItem,
             canonicalHash: validation.canonicalHash,
+            reviewState,
+            answerKeyVerified: false,
           },
           detectedAnswerKey: rawItem.officialAnswer || null,
+          // PENDING até aprovação humana explícita; REJECTED se falhou na validação estrutural
           validationStatus: validation.isValid
-            ? ("VERIFIED" as const)
+            ? ("PENDING" as const)
             : ("REJECTED" as const),
           validationErrorsJson: validation.issues,
         };
@@ -315,8 +363,8 @@ export async function POST(request: NextRequest) {
           status: "AWAITING_REVIEW",
           currentStage: "AWAITING_REVIEW",
           totalDetected: extractedItems.length,
-          totalStructured: extractedItems.length,
-          totalValidated: validCount,
+          totalStructured: structurallyValidCount,
+          totalValidated: 0, // 0 itens aprovados por humano ainda
           idempotencyKey,
           startedAt: new Date(),
           items: {
@@ -339,7 +387,7 @@ export async function POST(request: NextRequest) {
           action: "BROWSER_PDF_UPLOAD_EXTRACTED",
           previousStatus: "PENDING",
           newStatus: "AWAITING_REVIEW",
-          notes: `Upload via interface: ${extractedItems.length} questões extraídas (${validCount} válidas), ${Object.keys(answerMap).length} respostas no gabarito.`,
+          notes: `Upload privado realizado por ${auth.user.name}: ${extractedItems.length} questões extraídas (${structurallyValidCount} estruturalmente válidas, 0 aprovadas). Aguardando conferência humana.`,
           reviewerUserId: auth.user.id,
         },
       });
@@ -351,7 +399,7 @@ export async function POST(request: NextRequest) {
       jobId: job.id,
       editionCode: examEdition.editionCode,
       detected: job.totalDetected,
-      validated: job.totalValidated,
+      structurallyValid: job.totalStructured,
     });
 
     return NextResponse.json(

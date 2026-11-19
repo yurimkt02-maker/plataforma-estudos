@@ -325,6 +325,125 @@ export function detectAnswerKeyDivergences(
   return divergences;
 }
 
+export type ImportItemReviewState =
+  | "STRUCTURALLY_VALID"
+  | "AWAITING_REVIEW"
+  | "VERIFIED"
+  | "REJECTED";
+
+export type PublishEligibilityInput = {
+  originalNumber: number;
+  questionType: "MULTIPLE_CHOICE" | "TRUE_FALSE";
+  statement: string;
+  options: Array<{ label: string; content: string }>;
+  officialAnswer: string;
+  isAnnulled?: boolean;
+  subjectSlug: string;
+  classificationStatus?: "CLASSIFIED" | "CLASSIFICATION_PENDING";
+  hasMissingVisualOrTable?: boolean;
+  answerKeyVerified?: boolean;
+  reviewState?: ImportItemReviewState;
+  validationStatus: string;
+  reviewedAt: Date | string | null;
+  examDocVerificationStatus: string;
+  answerKeyDocVerificationStatus: string;
+};
+
+export type PublishEligibilityResult = {
+  eligible: boolean;
+  blockingReasons: string[];
+};
+
+/**
+ * Gate rigoroso de publicação: impede que qualquer questão estruturalmente válida
+ * seja publicada sem revisão humana explícita (VERIFIED), classificação de disciplina,
+ * verificação de figuras/tabelas e conferência independente do gabarito definitivo.
+ */
+export function evaluateItemPublishEligibility(
+  item: PublishEligibilityInput
+): PublishEligibilityResult {
+  const blockingReasons: string[] = [];
+
+  if (item.examDocVerificationStatus !== "VERIFIED") {
+    blockingReasons.push(
+      "PDF do caderno de prova ainda não foi conferido/verificado pelo administrador."
+    );
+  }
+  if (item.answerKeyDocVerificationStatus !== "VERIFIED") {
+    blockingReasons.push(
+      "PDF do gabarito definitivo ainda não foi conferido/verificado pelo administrador."
+    );
+  }
+
+  if (item.reviewState !== "VERIFIED" || item.validationStatus !== "VERIFIED") {
+    blockingReasons.push(
+      `Revisão humana incompleta (estado atual: ${item.reviewState ?? item.validationStatus}). Apenas itens explicitamente aprovados como VERIFIED podem ser publicados.`
+    );
+  }
+
+  if (!item.reviewedAt) {
+    blockingReasons.push(
+      "Registro de revisão humana ausente (reviewedAt nulo)."
+    );
+  }
+
+  if (
+    item.classificationStatus === "CLASSIFICATION_PENDING" ||
+    !item.subjectSlug ||
+    item.subjectSlug === "CLASSIFICATION_PENDING"
+  ) {
+    blockingReasons.push(
+      "Classificação de disciplina pendente (CLASSIFICATION_PENDING). Selecione a disciplina antes de publicar."
+    );
+  }
+
+  if (item.hasMissingVisualOrTable) {
+    blockingReasons.push(
+      "Item sinalizado com figura/imagem/tabela ausente ou não conferida."
+    );
+  }
+
+  if (!item.answerKeyVerified) {
+    blockingReasons.push(
+      "Gabarito oficial deste item ainda não foi conferido individualmente com o gabarito definitivo da banca."
+    );
+  }
+
+  if (!item.statement || item.statement.trim().length < 20) {
+    blockingReasons.push("Enunciado ausente ou truncado.");
+  }
+
+  const normalizedKey = (item.officialAnswer ?? "").trim().toUpperCase();
+  const isAnnulled =
+    Boolean(item.isAnnulled) ||
+    normalizedKey === "ANULADA" ||
+    normalizedKey === "*" ||
+    normalizedKey === "X";
+
+  if (!isAnnulled) {
+    const labels = new Set(item.options.map((o) => o.label.trim().toUpperCase()));
+    if (item.questionType === "MULTIPLE_CHOICE" && !labels.has(normalizedKey)) {
+      blockingReasons.push(
+        `Gabarito duvidoso ou incompatível (${normalizedKey || "VAZIO"}) com as alternativas extraídas.`
+      );
+    }
+    if (
+      item.questionType === "TRUE_FALSE" &&
+      normalizedKey !== "C" &&
+      normalizedKey !== "E"
+    ) {
+      blockingReasons.push(
+        `Gabarito Certo/Errado inválido ou duvidoso (${normalizedKey || "VAZIO"}).`
+      );
+    }
+  }
+
+  return {
+    eligible: blockingReasons.length === 0,
+    blockingReasons,
+  };
+}
+
 /**
  * Valida o mapeamento de alternativas entre duas versões de caderno da mesma prova
  * (ex.: Versão 1 -> Versão 2 ou Tipo 1 Branca -> Tipo 2 Verde), garantindo bijeção
