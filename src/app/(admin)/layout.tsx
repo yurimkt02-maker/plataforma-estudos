@@ -1,8 +1,13 @@
 import Link from "next/link";
-import { Shield, ArrowLeft, FileUp, CheckSquare, Scale, BookCopy } from "lucide-react";
+import { Shield, ArrowLeft, FileUp, CheckSquare, Scale, BookCopy, BarChart2 } from "lucide-react";
 import { requireAdminAuth } from "@/lib/auth/session";
 
 const ADMIN_NAV = [
+  {
+    href: "/admin/acervo",
+    label: "Painel do Acervo",
+    icon: BarChart2,
+  },
   {
     href: "/admin/importacoes",
     label: "Importação de Provas (PDF)",

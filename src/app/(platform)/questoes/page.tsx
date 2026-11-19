@@ -120,7 +120,115 @@ export default async function QuestionBankPage({
             </div>
           </div>
 
-          {/* Segunda linha de filtros: Resolução, Acurácia, Dificuldade e Ano */}
+          {/* Segunda linha de filtros: Disciplina, Banca, Cargo, Ano e Modalidade */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 pt-1">
+            <div>
+              <label
+                htmlFor="filter-subject"
+                className="block text-[11px] font-medium text-muted mb-1"
+              >
+                Disciplina / Assunto (Cross-carreira)
+              </label>
+              <select
+                id="filter-subject"
+                name="subjectId"
+                defaultValue={filters.subjectId ?? ""}
+                className="w-full h-9 px-3 rounded-md bg-background border border-border text-xs text-foreground"
+              >
+                <option value="">Todas as disciplinas e assuntos</option>
+                {catalog.subjects.map((subj) => (
+                  <optgroup key={subj.slug} label={subj.name}>
+                    {"id" in subj && (
+                      <option value={subj.id as string}>
+                        {subj.name} (Geral)
+                      </option>
+                    )}
+                    {subj.children?.map((child) =>
+                      "id" in child ? (
+                        <option key={child.slug} value={child.id as string}>
+                          └ {child.name}
+                        </option>
+                      ) : null
+                    )}
+                  </optgroup>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label
+                htmlFor="filter-board"
+                className="block text-[11px] font-medium text-muted mb-1"
+              >
+                Banca Organizadora
+              </label>
+              <select
+                id="filter-board"
+                name="examBoardId"
+                defaultValue={filters.examBoardId ?? ""}
+                className="w-full h-9 px-3 rounded-md bg-background border border-border text-xs text-foreground"
+              >
+                <option value="">Todas as bancas (Vunesp, Cebraspe, FGV)</option>
+                {catalog.boards.map((b) =>
+                  "id" in b ? (
+                    <option key={b.acronym} value={b.id as string}>
+                      {b.acronym} — {b.name}
+                    </option>
+                  ) : null
+                )}
+              </select>
+            </div>
+
+            <div>
+              <label
+                htmlFor="filter-position"
+                className="block text-[11px] font-medium text-muted mb-1"
+              >
+                Cargo / Exame
+              </label>
+              <select
+                id="filter-position"
+                name="positionId"
+                defaultValue={filters.positionId ?? ""}
+                className="w-full h-9 px-3 rounded-md bg-background border border-border text-xs text-foreground"
+              >
+                <option value="">Todos os cargos</option>
+                {catalog.positions.map((p) =>
+                  "id" in p ? (
+                    <option key={p.code} value={p.id as string}>
+                      {p.name}
+                    </option>
+                  ) : null
+                )}
+              </select>
+            </div>
+
+            <div>
+              <label
+                htmlFor="filter-institution"
+                className="block text-[11px] font-medium text-muted mb-1"
+              >
+                Instituição / Órgão
+              </label>
+              <select
+                id="filter-institution"
+                name="institutionId"
+                defaultValue={filters.institutionId ?? ""}
+                className="w-full h-9 px-3 rounded-md bg-background border border-border text-xs text-foreground"
+              >
+                <option value="">Todas as instituições</option>
+                {catalog.institutions.map((inst) =>
+                  "id" in inst ? (
+                    <option key={inst.acronym} value={inst.id as string}>
+                      {inst.acronym} — {inst.name}
+                    </option>
+                  ) : null
+                )}
+              </select>
+            </div>
+          </div>
+
+          {/* Terceira linha de filtros: Resolução, Acurácia, Dificuldade, Ano e Ordenação */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3.5 pt-1">
             <div>
               <label

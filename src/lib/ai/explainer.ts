@@ -185,10 +185,23 @@ export async function generateAuditedLegalExplanation(params: {
     citations: citationsInput,
   };
 
-  const validation = validateLegalExplanation(
+  const rawValidation = validateLegalExplanation(
     candidatePayload,
     params.retrievedSources
   );
+
+  // Regra estrita: sem AI_API_KEY configurada ou revisão humana individual,
+  // comentários determinísticos jamais podem receber o selo VERIFIED.
+  const validation: LegalValidationOutcome = !aiApiConfigured
+    ? {
+        ...rawValidation,
+        status:
+          rawValidation.status === "VERIFIED"
+            ? "PENDING_VERIFICATION"
+            : rawValidation.status,
+        isPublishableAsVerified: false,
+      }
+    : rawValidation;
 
   const aiConfigNotice = !aiApiConfigured
     ? "\n[Nota Técnica: A variável AI_API_KEY não está configurada no ambiente; exibindo fundamentação determinística extraída exclusivamente do Catálogo Jurídico Verificado sem simular geração por LLM.]"
@@ -253,11 +266,13 @@ export async function generateAuditedLegalExplanation(params: {
     disclaimerLabel:
       params.command === "GENERATE_DIDACTIC_DRILL"
         ? "MATERIAL DE TREINO GERADO POR IA — NÃO É QUESTÃO OFICIAL"
-        : validation.status === "VERIFIED"
-          ? aiApiConfigured
-            ? "COMENTÁRIO VINCULADO A FONTE OFICIAL VERIFICADA"
-            : "FUNDAMENTAÇÃO DETERMINÍSTICA DE FONTE OFICIAL VERIFICADA (AI_API_KEY NÃO CONFIGURADA)"
-          : "EXPLICAÇÃO SEM FONTE VINCULADA — VALIDAÇÃO DOCUMENTAL PENDENTE",
+        : !aiApiConfigured
+          ? hasVerifiedSources
+            ? "REFERÊNCIAS NORMATIVAS CATALOGADAS — COMENTÁRIO INDIVIDUAL PENDENTE (AI_API_KEY NÃO CONFIGURADA)"
+            : "COMENTÁRIO INDIVIDUAL PENDENTE — SEM FONTE NORMATIVA VINCULADA"
+          : validation.status === "VERIFIED"
+            ? "COMENTÁRIO JURÍDICO INDIVIDUALMENTE VERIFICADO"
+            : "EXPLICAÇÃO GERADA POR IA — VALIDAÇÃO DOCUMENTAL PENDENTE",
     summary: candidatePayload.summary,
     correctOptionAnalysis: candidatePayload.correctOptionAnalysis,
     wrongOptionsAnalysis,

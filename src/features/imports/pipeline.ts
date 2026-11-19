@@ -14,6 +14,9 @@ export type RawImportedQuestionCandidate = {
   isAnnulled?: boolean;
   subjectSlug: string;
   pageNumber?: number;
+  pageImages?: string[];
+  requiresHumanReview?: boolean;
+  reviewReason?: string | null;
   sourceDocumentSha256: string;
   examFormVersionLabel: string;
 };
@@ -26,14 +29,37 @@ export type QuestionValidationIssue = {
     | "INVALID_ANSWER_KEY"
     | "MISSING_VERSION_LABEL"
     | "MISSING_DOCUMENT_ORIGIN"
-    | "MISSING_SUBJECT";
+    | "MISSING_SUBJECT"
+    | "REQUIRES_VISUAL_REVIEW";
   message: string;
 };
 
 export type ValidatedImportItemResult = {
   isValid: boolean;
+  requiresHumanReview: boolean;
+  targetStatus: "PUBLISHED" | "AWAITING_REVIEW" | "REJECTED";
   canonicalHash: string;
   issues: QuestionValidationIssue[];
+};
+
+export type ExamCompletenessAuditResult = {
+  expectedCount: number;
+  extractedCount: number;
+  completenessPercent: number;
+  isComplete: boolean;
+  missingNumbers: number[];
+  duplicateNumbers: number[];
+  itemsWithoutAnswerKey: number[];
+  itemsRequiringReview: number[];
+};
+
+export type AnswerKeyDivergence = {
+  originalNumber: number;
+  storedAnswer: string;
+  referenceAnswer: string;
+  storedAnnulled: boolean;
+  referenceAnnulled: boolean;
+  reason: string;
 };
 
 /**
@@ -63,6 +89,7 @@ export function computeQuestionCanonicalHash(params: {
 /**
  * Garante que nenhuma questão com extração incompleta, gabarito incompatível,
  * versão indefinida ou origem desconhecida seja aprovada para publicação (Seção 9.5).
+ * Itens visuais/duvidosos são encaminhados automaticamente para AWAITING_REVIEW.
  */
 export function validateExtractedQuestionItem(
   item: RawImportedQuestionCandidate
@@ -131,7 +158,8 @@ export function validateExtractedQuestionItem(
   const isAnnulled =
     Boolean(item.isAnnulled) ||
     normalizedKey === "ANULADA" ||
-    normalizedKey === "*";
+    normalizedKey === "*" ||
+    normalizedKey === "X";
 
   if (!isAnnulled) {
     if (item.questionType === "MULTIPLE_CHOICE" && !labels.has(normalizedKey)) {
@@ -154,15 +182,202 @@ export function validateExtractedQuestionItem(
     }
   }
 
+  const requiresHumanReview = Boolean(item.requiresHumanReview);
+  if (requiresHumanReview) {
+    issues.push({
+      code: "REQUIRES_VISUAL_REVIEW",
+      message:
+        item.reviewReason ||
+        "Item sinalizado para revisão humana (figura, diagrama ou extração ambígua).",
+    });
+  }
+
+  const blockingIssues = issues.filter(
+    (i) => i.code !== "REQUIRES_VISUAL_REVIEW"
+  );
+
   const canonicalHash = computeQuestionCanonicalHash({
     questionType: item.questionType,
     statement: item.statement || "",
     options: item.options || [],
   });
 
+  const isValid = blockingIssues.length === 0;
+  const targetStatus: ValidatedImportItemResult["targetStatus"] = !isValid
+    ? "REJECTED"
+    : requiresHumanReview
+      ? "AWAITING_REVIEW"
+      : "PUBLISHED";
+
   return {
-    isValid: issues.length === 0,
+    isValid,
+    requiresHumanReview,
+    targetStatus,
     canonicalHash,
     issues,
   };
+}
+
+/**
+ * Executa auditoria de completude de um caderno de prova extraído (números faltantes,
+ * duplicidades de numeração, itens sem gabarito e percentual de extração).
+ */
+export function auditExamCompleteness(params: {
+  expectedCount: number;
+  items: Array<{
+    originalNumber: number;
+    officialAnswer?: string | null;
+    requiresHumanReview?: boolean;
+  }>;
+}): ExamCompletenessAuditResult {
+  const seen = new Set<number>();
+  const duplicates = new Set<number>();
+  const withoutKey: number[] = [];
+  const requiringReview: number[] = [];
+
+  for (const item of params.items) {
+    if (seen.has(item.originalNumber)) {
+      duplicates.add(item.originalNumber);
+    }
+    seen.add(item.originalNumber);
+
+    if (!item.officialAnswer || !item.officialAnswer.trim()) {
+      withoutKey.push(item.originalNumber);
+    }
+    if (item.requiresHumanReview) {
+      requiringReview.push(item.originalNumber);
+    }
+  }
+
+  const missingNumbers: number[] = [];
+  for (let n = 1; n <= params.expectedCount; n++) {
+    if (!seen.has(n)) {
+      missingNumbers.push(n);
+    }
+  }
+
+  const extractedCount = seen.size;
+  const completenessPercent =
+    params.expectedCount > 0
+      ? Number(((extractedCount / params.expectedCount) * 100).toFixed(1))
+      : 0;
+
+  return {
+    expectedCount: params.expectedCount,
+    extractedCount,
+    completenessPercent,
+    isComplete:
+      params.expectedCount > 0 &&
+      missingNumbers.length === 0 &&
+      duplicates.size === 0 &&
+      withoutKey.length === 0,
+    missingNumbers,
+    duplicateNumbers: Array.from(duplicates).sort((a, b) => a - b),
+    itemsWithoutAnswerKey: withoutKey.sort((a, b) => a - b),
+    itemsRequiringReview: requiringReview.sort((a, b) => a - b),
+  };
+}
+
+/**
+ * Compara um conjunto de gabaritos armazenados contra um gabarito oficial de referência
+ * para detectar divergências (alterações pós-recurso, anulações ou erro de caderno/data).
+ */
+export function detectAnswerKeyDivergences(
+  stored: Array<{
+    originalNumber: number;
+    answerValue: string;
+    isAnnulled: boolean;
+  }>,
+  reference: Record<number, { answerValue: string; isAnnulled: boolean }>
+): AnswerKeyDivergence[] {
+  const divergences: AnswerKeyDivergence[] = [];
+
+  for (const item of stored) {
+    const ref = reference[item.originalNumber];
+    if (!ref) continue;
+
+    const storedNorm = item.answerValue.trim().toUpperCase();
+    const refNorm = ref.answerValue.trim().toUpperCase();
+
+    if (item.isAnnulled !== ref.isAnnulled) {
+      divergences.push({
+        originalNumber: item.originalNumber,
+        storedAnswer: storedNorm,
+        referenceAnswer: refNorm,
+        storedAnnulled: item.isAnnulled,
+        referenceAnnulled: ref.isAnnulled,
+        reason: ref.isAnnulled
+          ? "Questão anulada no gabarito oficial de referência, mas marcada como válida no banco."
+          : "Questão marcada como anulada no banco, mas válida no gabarito oficial de referência (verificar data/caderno).",
+      });
+    } else if (!ref.isAnnulled && storedNorm !== refNorm) {
+      divergences.push({
+        originalNumber: item.originalNumber,
+        storedAnswer: storedNorm,
+        referenceAnswer: refNorm,
+        storedAnnulled: item.isAnnulled,
+        referenceAnnulled: ref.isAnnulled,
+        reason: `Alternativa divergente: armazenado=${storedNorm}, referência oficial=${refNorm}.`,
+      });
+    }
+  }
+
+  return divergences;
+}
+
+/**
+ * Valida o mapeamento de alternativas entre duas versões de caderno da mesma prova
+ * (ex.: Versão 1 -> Versão 2 ou Tipo 1 Branca -> Tipo 2 Verde), garantindo bijeção
+ * e coerência do gabarito oficial entre versões.
+ */
+export function validateMultiVersionOptionMapping(params: {
+  canonicalAnswer: string;
+  versionAnswer: string;
+  isAnnulled: boolean;
+  optionMapping: Record<string, string> | null;
+  expectedLabels: string[];
+}): { isValid: boolean; error: string | null } {
+  if (params.isAnnulled) {
+    return { isValid: true, error: null };
+  }
+
+  if (!params.optionMapping) {
+    return {
+      isValid: false,
+      error:
+        "Caderno secundário sem optionMappingJson explícito — proibido duplicar gabarito de versão secundária sem mapa validado.",
+    };
+  }
+
+  const keys = Object.keys(params.optionMapping).map((k) => k.toUpperCase());
+  const values = Object.values(params.optionMapping).map((v) => v.toUpperCase());
+  const expectedSet = new Set(params.expectedLabels.map((l) => l.toUpperCase()));
+
+  if (keys.length !== expectedSet.size || new Set(values).size !== expectedSet.size) {
+    return {
+      isValid: false,
+      error: "Mapa de alternativas de caderno secundário não constitui bijeção completa.",
+    };
+  }
+
+  for (const lbl of expectedSet) {
+    if (!keys.includes(lbl) || !values.includes(lbl)) {
+      return {
+        isValid: false,
+        error: `Alternativa ${lbl} ausente no mapa de correspondência entre cadernos.`,
+      };
+    }
+  }
+
+  // optionMapping mapeia letra do caderno secundário -> letra canônica (Versão 1)
+  const mappedToCanonical =
+    params.optionMapping[params.versionAnswer.toUpperCase()]?.toUpperCase();
+  if (mappedToCanonical !== params.canonicalAnswer.toUpperCase()) {
+    return {
+      isValid: false,
+      error: `Divergência entre cadernos: gabarito na versão (${params.versionAnswer}) aponta para ${mappedToCanonical ?? "N/A"}, mas gabarito canônico é ${params.canonicalAnswer}.`,
+    };
+  }
+
+  return { isValid: true, error: null };
 }

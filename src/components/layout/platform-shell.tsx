@@ -162,7 +162,7 @@ export function PlatformShell({
               Curadoria &amp; Acervo
             </div>
             <Link
-              href="/admin/importacoes"
+              href="/admin/acervo"
               className={cn(
                 "flex items-center gap-2.5 px-2.5 py-2 rounded-md text-xs font-medium transition-colors",
                 pathname.startsWith("/admin")
@@ -171,7 +171,7 @@ export function PlatformShell({
               )}
             >
               <Shield className="w-4 h-4 shrink-0" />
-              <span>Administração de Provas</span>
+              <span>Painel do Acervo &amp; Curadoria</span>
             </Link>
           </div>
         </div>
