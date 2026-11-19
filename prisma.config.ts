@@ -1,6 +1,8 @@
-import "dotenv/config";
+import dotenv from "dotenv";
 import path from "node:path";
 import { defineConfig } from "prisma/config";
+
+dotenv.config({ path: [".env.local", ".env"] });
 
 /**
  * Resolve a URL de conexão direta para CLI e Migrations do Prisma.
@@ -19,7 +21,7 @@ export function resolveDirectDatabaseUrl(
 
   if (!candidate) {
     throw new Error(
-      "[PrismaConfig] URL de conexão direta ausente. Configure DIRECT_URL (ou DATABASE_URL no Vercel Marketplace)."
+      "[PrismaConfig] URL de conexão direta ausente. Configure DIRECT_URL ou DATABASE_URL (Vercel Marketplace)."
     );
   }
 
@@ -55,7 +57,7 @@ export function resolvePooledDatabaseUrl(
     const fallback = env.DIRECT_URL?.trim() || env.DATABASE_URL?.trim() || "";
     if (!fallback) {
       throw new Error(
-        "[PrismaConfig] Nenhuma variável de banco configurada. Defina DATABASE_URL_POOLED e DIRECT_URL no arquivo .env.local."
+        "[PrismaConfig] Nenhuma variável de banco configurada. Defina DATABASE_URL_POOLED e DATABASE_URL/DIRECT_URL no arquivo .env.local."
       );
     }
     return fallback;
@@ -73,11 +75,18 @@ export function resolvePooledDatabaseUrl(
   return pooled;
 }
 
-// Sincroniza DIRECT_URL e DATABASE_URL_POOLED quando provisionado via Vercel Marketplace
+// Sincroniza DIRECT_URL e DATABASE_URL para compatibilidade entre CLI manual e Vercel Marketplace
+if (process.env.DIRECT_URL && !process.env.DATABASE_URL) {
+  process.env.DATABASE_URL = process.env.DIRECT_URL;
+}
 if (!process.env.DIRECT_URL && process.env.DATABASE_URL) {
   process.env.DIRECT_URL = process.env.DATABASE_URL;
 }
-if (!process.env.DATABASE_URL_POOLED && process.env.DATABASE_URL && process.env.NODE_ENV !== "production") {
+if (
+  !process.env.DATABASE_URL_POOLED &&
+  process.env.DATABASE_URL &&
+  process.env.NODE_ENV !== "production"
+) {
   process.env.DATABASE_URL_POOLED = process.env.DATABASE_URL;
 }
 

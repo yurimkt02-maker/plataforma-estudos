@@ -1,4 +1,5 @@
-import "dotenv/config";
+import dotenv from "dotenv";
+dotenv.config({ path: [".env.local", ".env"] });
 import { createHash } from "node:crypto";
 import { prisma } from "../src/lib/db/prisma";
 import { hashPassword } from "../src/lib/auth/password";

@@ -1,4 +1,5 @@
-import "dotenv/config";
+import dotenv from "dotenv";
+dotenv.config({ path: [".env.local", ".env"] });
 import { resolveDirectDatabaseUrl, resolvePooledDatabaseUrl } from "../../prisma.config";
 import { isDatabaseConfigured, prisma } from "../../src/lib/db/prisma";
 
@@ -28,7 +29,7 @@ async function verifyInfrastructure(): Promise<void> {
 
   const start = Date.now();
   const pingResult = await prisma.$queryRaw<Array<{ current_database: string; version: string }>>`
-    SELECT current_database(), version()
+    SELECT current_database()::text AS current_database, version()::text AS version
   `;
   const latencyMs = Date.now() - start;
 

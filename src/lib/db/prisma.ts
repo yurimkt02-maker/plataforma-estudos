@@ -34,10 +34,12 @@ export function isDatabaseConfigured(): boolean {
 
 /**
  * Cria o PrismaClient conectado ao Prisma Postgres por meio do driver adapter oficial (@prisma/adapter-pg).
- * Utiliza exclusivamente a conexão pooled (DATABASE_URL_POOLED) em runtime.
+ * Utiliza a conexão pooled (DATABASE_URL_POOLED) em runtime com fallback seguro para DATABASE_URL.
  */
 function createPrismaClient(): PrismaClient {
-  const connectionString = resolvePooledDatabaseUrl(process.env);
+  const connectionString = isDatabaseConfigured()
+    ? resolvePooledDatabaseUrl(process.env)
+    : "postgresql://build-placeholder:placeholder@localhost:5432/plataforma_estudos_build";
 
   const pool =
     globalForPrisma.pgPool ??
@@ -48,6 +50,7 @@ function createPrismaClient(): PrismaClient {
       connectionTimeoutMillis: 10_000,
       ssl:
         connectionString.includes("sslmode=require") ||
+        connectionString.includes("db.prisma.io") ||
         process.env.NODE_ENV === "production"
           ? { rejectUnauthorized: false }
           : undefined,
@@ -69,22 +72,17 @@ function createPrismaClient(): PrismaClient {
 }
 
 /**
- * Obtém a instância singleton do PrismaClient sob demanda, evitando abrir conexões TCP durante o build estático.
+ * Instância singleton real do PrismaClient (sem wrapper Proxy).
+ * O pg.Pool não abre socket TCP até que a primeira query seja executada,
+ * garantindo segurança tanto no build estático quanto em runtime nas Vercel Functions.
  */
-export function getPrismaClient(): PrismaClient {
-  if (!globalForPrisma.prismaClient) {
-    globalForPrisma.prismaClient = createPrismaClient();
-  }
-  return globalForPrisma.prismaClient;
+export const prisma: PrismaClient =
+  globalForPrisma.prismaClient ?? createPrismaClient();
+
+if (process.env.NODE_ENV !== "production") {
+  globalForPrisma.prismaClient = prisma;
 }
 
-/**
- * Proxy seguro para o PrismaClient singleton: inicializa a conexão apenas quando uma query é invocada no servidor.
- */
-export const prisma: PrismaClient = new Proxy({} as PrismaClient, {
-  get(_target, prop, receiver) {
-    const client = getPrismaClient();
-    const value = Reflect.get(client, prop, receiver);
-    return typeof value === "function" ? value.bind(client) : value;
-  },
-});
+export function getPrismaClient(): PrismaClient {
+  return prisma;
+}
