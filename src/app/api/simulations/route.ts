@@ -105,7 +105,7 @@ export async function POST(request: NextRequest) {
 
     // Deduplica por questionId para jamais repetir a mesma questão que aparece em múltiplas versões de caderno
     const seenQuestionIds = new Set<string>();
-    const instances = [];
+    const instances: typeof rawInstances = [];
     for (const inst of rawInstances) {
       if (!seenQuestionIds.has(inst.questionId)) {
         seenQuestionIds.add(inst.questionId);
