@@ -217,6 +217,12 @@ export const INITIAL_SUBJECTS = [
         name: "Prisão em Flagrante, Preventiva e Medidas Cautelares",
         isLegalSubject: true,
       },
+      {
+        slug: "citacoes-e-intimacoes-cpp",
+        code: "DIR-PROC-PEN-03",
+        name: "Citações e Intimações no Processo Penal (Arts. 351 a 372 do CPP)",
+        isLegalSubject: true,
+      },
     ],
   },
   {
@@ -236,6 +242,12 @@ export const INITIAL_SUBJECTS = [
         slug: "recursos-no-processo-civil",
         code: "DIR-PROC-CIV-02",
         name: "Teoria Geral dos Recursos e Recursos em Espécie",
+        isLegalSubject: true,
+      },
+      {
+        slug: "juizados-especiais-civeis-e-fazenda-publica",
+        code: "DIR-PROC-CIV-03",
+        name: "Juizados Especiais Cíveis e da Fazenda Pública (Leis nº 9.099/1995 e nº 12.153/2009)",
         isLegalSubject: true,
       },
     ],
@@ -323,7 +335,7 @@ export const INITIAL_SUBJECTS = [
 export const INITIAL_EXAM_EDITIONS = [
   {
     editionCode: "TJSP-2024-ESCREVENTE",
-    title: "Concurso Público TJSP 2024 — Escrevente Técnico Judiciário (EditalTJSP2401)",
+    title: "Concurso Público TJSP 2024 — Escrevente Técnico Judiciário (Edital TJSP2401)",
     year: 2024,
     examDate: "2024-09-08",
     phase: "1ª Fase - Prova Objetiva",
@@ -442,9 +454,15 @@ export const INITIAL_VERIFIED_LEGAL_SOURCES = [
         isCurrentlyInForce: true,
       },
       {
-        referenceLabel: "CF/1988, Art. 37, caput",
+        referenceLabel: "CF/1988, Art. 8º, VII e VIII",
         content:
-          "A administração pública direta e indireta de qualquer dos Poderes da União, dos Estados, do Distrito Federal e dos Municípios obedecerá aos princípios de legalidade, impessoalidade, moralidade, publicidade e eficiência.",
+          "VII - o aposentado filiado tem direito a votar e ser votado nas organizações sindicais; VIII - é vedada a dispensa do empregado sindicalizado a partir do registro da candidatura a cargo de direção ou representação sindical e, se eleito, ainda que suplente, até um ano após o final do mandato, salvo se cometer falta grave nos termos da lei.",
+        isCurrentlyInForce: true,
+      },
+      {
+        referenceLabel: "CF/1988, Art. 37, XVI e XVII",
+        content:
+          "XVI - é vedada a acumulação remunerada de cargos públicos, exceto, quando houver compatibilidade de horários, observado em qualquer caso o disposto no inciso XI: a) a de dois cargos de professor; b) a de um cargo de professor com outro técnico ou científico; c) a de dois cargos ou empregos privativos de profissionais de saúde, com profissões regulamentadas; XVII - a proibição de acumular estende-se a empregos e funções e abrange autarquias, fundações, empresas públicas, sociedades de economia mista, suas subsidiárias, e sociedades controladas, direta ou indiretamente, pelo poder público.",
         isCurrentlyInForce: true,
       },
     ],
@@ -466,6 +484,12 @@ export const INITIAL_VERIFIED_LEGAL_SOURCES = [
           "Consideram-se atos de improbidade administrativa as condutas dolosas tipificadas nos arts. 9º, 10 e 11 desta Lei, ressalvados tipos previstos em leis especiais. Considera-se dolo a vontade livre e consciente de alcançar o resultado ilícito tipificado nos arts. 9º, 10 e 11 desta Lei, não bastando a voluntariedade do agente.",
         isCurrentlyInForce: true,
       },
+      {
+        referenceLabel: "Lei nº 8.429/1992, Art. 16, § 9º / Art. 17, § 10 (Redação Lei 14.230/2021)",
+        content:
+          "Da decisão que deferir ou indeferir a medida relativa à indisponibilidade de bens caberá agravo de instrumento, nos termos da Lei nº 13.105, de 16 de março de 2015 (Código de Processo Civil).",
+        isCurrentlyInForce: true,
+      },
     ],
   },
   {
@@ -480,15 +504,21 @@ export const INITIAL_VERIFIED_LEGAL_SOURCES = [
     effectiveFrom: "1942-01-01",
     passages: [
       {
+        referenceLabel: "Código Penal, Art. 294 (Petrechos de Falsificação)",
+        content:
+          "Fabricar, adquirir, fornecer, possuir ou guardar objeto especialmente destinado à falsificação de qualquer dos papéis referidos no artigo anterior: Pena - reclusão, de um a três anos, e multa.",
+        isCurrentlyInForce: true,
+      },
+      {
         referenceLabel: "Código Penal, Art. 312 (Peculato)",
         content:
           "Apropriar-se o funcionário público de dinheiro, valor ou qualquer outro bem móvel, público ou particular, de que tem a posse em razão do cargo, ou desviá-lo, em proveito próprio ou alheio: Pena - reclusão, de dois a doze anos, e multa.",
         isCurrentlyInForce: true,
       },
       {
-        referenceLabel: "Código Penal, Art. 316 (Concussão - Redação Lei 13.964/2019)",
+        referenceLabel: "Código Penal, Art. 316, caput e §§ 1º e 2º (Concussão e Excesso de Exação)",
         content:
-          "Exigir, para si ou para outrem, direta ou indiretamente, ainda que fora da função ou antes de assumi-la, mas em razão dela, vantagem indevida: Pena - reclusão, de 2 (dois) a 12 (doze) anos, e multa.",
+          "Art. 316 - Exigir, para si ou para outrem, direta ou indiretamente, ainda que fora da função ou antes de assumi-la, mas em razão dela, vantagem indevida: Pena - reclusão, de 2 (dois) a 12 (doze) anos, e multa. § 1º - Se o funcionário exige tributo ou contribuição social que sabe ou deveria saber indevido, ou, quando devido, emprega na cobrança meio vexatório ou gravoso, que a lei não autoriza: Pena - reclusão, de 3 (três) a 8 (oito) anos, e multa. § 2º - Se o funcionário desvia, em proveito próprio ou de outrem, o que recebeu indevidamente para recolher aos cofres públicos: Pena - reclusão, de dois a doze anos, e multa.",
         isCurrentlyInForce: true,
       },
     ],
@@ -496,18 +526,18 @@ export const INITIAL_VERIFIED_LEGAL_SOURCES = [
   {
     sourceType: "FEDERAL_LAW" as const,
     authority: "Presidência da República — Casa Civil (Planalto)",
-    title: "Código de Trânsito Brasileiro (CTB)",
-    documentNumber: "Lei nº 9.503/1997",
+    title: "Código de Processo Penal",
+    documentNumber: "Decreto-Lei nº 3.689/1941",
     jurisdiction: "BR-FEDERAL",
     officialUrl:
-      "https://www.planalto.gov.br/ccivil_03/leis/l9503compilado.htm",
-    publishedAt: "1997-09-23",
-    effectiveFrom: "1998-01-22",
+      "https://www.planalto.gov.br/ccivil_03/decreto-lei/del3689compilado.htm",
+    publishedAt: "1941-10-03",
+    effectiveFrom: "1942-01-01",
     passages: [
       {
-        referenceLabel: "CTB (Lei nº 9.503/1997), Art. 29, VII",
+        referenceLabel: "Código de Processo Penal, Art. 362 e Art. 366",
         content:
-          "Os veículos destinados a socorro de incêndio e salvamento, os de polícia, os de fiscalização e operação de trânsito e as ambulâncias, além de prioridade no trânsito, gozam de livre circulação, estacionamento e parada, quando em serviço de urgência, de policiamento ostensivo ou de preservação da ordem pública.",
+          "Art. 366. Se o acusado, citado por edital, não comparecer, nem constituir advogado, ficarão suspensos o processo e o curso do prazo prescricional, podendo o juiz determinar a produção antecipada das provas consideradas urgentes e, se for o caso, decretar prisão preventiva, nos termos do disposto no art. 312.",
         isCurrentlyInForce: true,
       },
     ],
@@ -515,17 +545,24 @@ export const INITIAL_VERIFIED_LEGAL_SOURCES = [
   {
     sourceType: "FEDERAL_LAW" as const,
     authority: "Presidência da República — Casa Civil (Planalto)",
-    title: "Estatuto da Advocacia e a Ordem dos Advogados do Brasil (EOAB)",
-    documentNumber: "Lei nº 8.906/1994",
+    title: "Lei dos Juizados Especiais da Fazenda Pública e Juizados Especiais Cíveis",
+    documentNumber: "Leis nº 12.153/2009 e nº 9.099/1995",
     jurisdiction: "BR-FEDERAL",
-    officialUrl: "https://www.planalto.gov.br/ccivil_03/leis/l8906.htm",
-    publishedAt: "1994-07-04",
-    effectiveFrom: "1994-07-04",
+    officialUrl:
+      "https://www.planalto.gov.br/ccivil_03/_ato2007-2010/2009/lei/l12153.htm",
+    publishedAt: "2009-12-22",
+    effectiveFrom: "2010-06-23",
     passages: [
       {
-        referenceLabel: "Lei nº 8.906/1994 (EOAB), Art. 7º, XIV",
+        referenceLabel: "Lei nº 12.153/2009, Art. 7º e Art. 8º",
         content:
-          "São direitos do advogado: examinar, em qualquer instituição responsável por conduzir investigação, mesmo sem procuração, autos de flagrante e de investigações de qualquer natureza, findos ou em andamento, ainda que conclusos à autoridade, podendo copiar peças e tomar apontamentos, em meio físico ou digital.",
+          "Art. 7º Não haverá prazo diferenciado para a prática de qualquer ato processual pelas pessoas jurídicas de direito público, inclusive a interposição de recursos, devendo a citação para a audiência de conciliação ser efetuada com antecedência mínima de 30 (trinta) dias. Art. 8º Os representantes judiciais dos réus presentes à audiência poderão conciliar, transigir ou desistir nos processos da competência dos Juizados Especiais, nos termos e nas hipóteses previstas na lei do respectivo ente da Federação.",
+        isCurrentlyInForce: true,
+      },
+      {
+        referenceLabel: "Lei nº 9.099/1995, Art. 19",
+        content:
+          "Art. 19. As intimações serão feitas na forma prevista para citação, ou por qualquer outro meio idôneo de comunicação.",
         isCurrentlyInForce: true,
       },
     ],
@@ -542,9 +579,27 @@ export const INITIAL_VERIFIED_LEGAL_SOURCES = [
     effectiveFrom: "1968-10-28",
     passages: [
       {
-        referenceLabel: "Lei Estadual SP nº 10.261/1968, Art. 251",
+        referenceLabel: "Lei Estadual SP nº 10.261/1968, Arts. 315, 316 e 317",
         content:
-          "São penas disciplinares: I - repreensão; II - suspensão; III - multa; IV - demissão; V - demissão a bem do serviço público; VI - cassação de aposentadoria ou disponibilidade.",
+          "Art. 315 - Admitir-se-á, a qualquer tempo, a revisão de punição disciplinar de que não caiba mais recurso, se surgirem fatos ou circunstâncias ainda não apreciados, ou vícios insanáveis de procedimento, que possam justificar redução ou anulação da pena aplicada. § 1º - A simples alegação da injustiça da decisão não constitui fundamento do pedido. Art. 316 - A pena imposta não poderá ser agravada pela revisão.",
+        isCurrentlyInForce: true,
+      },
+    ],
+  },
+  {
+    sourceType: "ADMINISTRATIVE_RULE" as const,
+    authority: "Corregedoria Geral da Justiça do Estado de São Paulo (TJSP)",
+    title: "Normas de Serviço da Corregedoria Geral da Justiça do TJSP (Tomo I)",
+    documentNumber: "NSCGJ-TJSP Tomo I",
+    jurisdiction: "BR-SP",
+    officialUrl: "https://www.tjsp.jus.br/Corregedoria/Comunicados/NormasExtrajudiciais",
+    publishedAt: "2013-01-01",
+    effectiveFrom: "2013-01-01",
+    passages: [
+      {
+        referenceLabel: "NSCGJ-TJSP, Tomo I, Art. 47 e Art. 49, § 1º e Art. 51",
+        content:
+          "Art. 47. A inserção de dados no sistema informatizado oficial será a mais completa e abrangente possível, de modo que todas as ocorrências do processo físico constem do ambiente virtual, formando banco de dados que servirá de memória permanente. Art. 49, § 1º É vedado ao funcionário credenciado ceder a respectiva senha ou permitir que outrem, funcionário ou não, use-a para acessar indevidamente o sistema informatizado. Art. 51. Os escrivães judiciais do serviço de distribuição e dos ofícios de justiça realizarão auditoria semanal no sistema, de acordo com os níveis de criticidade definidos, comunicando à Corregedoria Geral da Justiça qualquer irregularidade.",
         isCurrentlyInForce: true,
       },
     ],

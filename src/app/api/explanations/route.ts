@@ -3,7 +3,6 @@ import { requireApiAuth } from "@/lib/auth/api-guard";
 import { isDatabaseConfigured, prisma } from "@/lib/db/prisma";
 import { explanationRequestSchema } from "@/lib/validations/schemas";
 import { generateAuditedLegalExplanation } from "@/lib/ai/explainer";
-import { computeExplanationSnapshotHash } from "@/features/legal-knowledge/validator";
 import { logger } from "@/lib/utils/logger";
 
 export const runtime = "nodejs";
@@ -89,45 +88,8 @@ export async function POST(request: NextRequest) {
     const legalSources = await prisma.legalSource.findMany({
       where: { verificationStatus: "VERIFIED" },
       include: { passages: true },
-      take: 10,
+      take: 25,
     });
-
-    const passageHashes = legalSources.flatMap((s) =>
-      s.passages.map((p) => p.textHash)
-    );
-    const expectedSnapshotHash = computeExplanationSnapshotHash({
-      questionId: question.id,
-      officialKeyRevisionId: latestKey.id,
-      passageHashes: passageHashes.length > 0 ? [passageHashes[0]!] : ["NO_SOURCES"],
-    });
-
-    // Otimização de custos e cache (Seção 9.7 e 11.4): reutiliza explicação já verificada se o hash coincidir
-    if (command === "FULL_EXPLANATION") {
-      const cached = await prisma.questionExplanation.findUnique({
-        where: {
-          questionId_officialKeyRevisionId_sourceSnapshotHash: {
-            questionId: question.id,
-            officialKeyRevisionId: latestKey.id,
-            sourceSnapshotHash: expectedSnapshotHash,
-          },
-        },
-        include: {
-          citations: {
-            include: {
-              legalSource: true,
-              legalPassage: true,
-            },
-          },
-        },
-      });
-
-      if (cached) {
-        return NextResponse.json({
-          cached: true,
-          explanation: cached,
-        });
-      }
-    }
 
     const primarySubject =
       question.subjects.find((s) => s.isPrimary)?.subject ??
@@ -151,7 +113,7 @@ export async function POST(request: NextRequest) {
     });
 
     if (command === "FULL_EXPLANATION") {
-      const saved = await prisma.questionExplanation.upsert({
+      const existing = await prisma.questionExplanation.findUnique({
         where: {
           questionId_officialKeyRevisionId_sourceSnapshotHash: {
             questionId: question.id,
@@ -159,20 +121,26 @@ export async function POST(request: NextRequest) {
             sourceSnapshotHash: generated.validation.sourceSnapshotHash,
           },
         },
-        update: {
-          status: generated.validation.status,
-          summary: generated.summary,
-          correctOptionAnalysis: generated.correctOptionAnalysis,
-          wrongOptionsAnalysisJson: generated.wrongOptionsAnalysis,
-          historicalUnderstanding: generated.historicalUnderstanding,
-          currentUnderstanding: generated.currentUnderstanding,
-          hasDivergenceOrUpdate: generated.validation.hasDivergenceOrUpdate,
-          divergenceNote: generated.validation.divergenceNote,
-          lastCheckedAt: new Date(),
-          verifiedAt:
-            generated.validation.status === "VERIFIED" ? new Date() : null,
+        include: {
+          citations: {
+            include: {
+              legalSource: true,
+              legalPassage: true,
+            },
+          },
         },
-        create: {
+      });
+
+      if (existing) {
+        return NextResponse.json({
+          cached: true,
+          explanation: existing,
+          generated,
+        });
+      }
+
+      const saved = await prisma.questionExplanation.create({
+        data: {
           questionId: question.id,
           officialKeyRevisionId: latestKey.id,
           status: generated.validation.status,
@@ -194,6 +162,14 @@ export async function POST(request: NextRequest) {
               claimReference: c.claimReference,
               quotedSnippet: c.quotedSnippet ?? null,
             })),
+          },
+        },
+        include: {
+          citations: {
+            include: {
+              legalSource: true,
+              legalPassage: true,
+            },
           },
         },
       });

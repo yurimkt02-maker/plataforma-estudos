@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
 import { getServerSession, type SessionUser } from "@/lib/auth/session";
+import { isSessionRevokedServerless } from "@/lib/auth/session-revocation";
 
 export type ApiAuthResult =
   | { authorized: true; user: SessionUser }
   | { authorized: false; response: NextResponse };
 
 /**
- * Valida sessão privada em Route Handlers (camada adicional ao middleware).
+ * Valida sessão privada em Route Handlers (camada adicional ao middleware) e verifica revogação no Prisma Postgres.
  */
 export async function requireApiAuth(): Promise<ApiAuthResult> {
   const user = await getServerSession();
@@ -22,6 +23,21 @@ export async function requireApiAuth(): Promise<ApiAuthResult> {
       ),
     };
   }
+
+  const revoked = await isSessionRevokedServerless(user);
+  if (revoked) {
+    return {
+      authorized: false,
+      response: NextResponse.json(
+        {
+          error: "SESSION_REVOKED",
+          message: "Esta sessão foi encerrada e revogada no servidor.",
+        },
+        { status: 401 }
+      ),
+    };
+  }
+
   return { authorized: true, user };
 }
 

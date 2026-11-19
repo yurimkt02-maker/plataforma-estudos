@@ -55,7 +55,7 @@ export async function POST(request: NextRequest) {
     const rulesetSnapshot =
       OFFICIAL_RULESETS[rulesetCode] ?? OFFICIAL_RULESETS.VUNESP_STANDARD_5!;
 
-    const instances = await prisma.examQuestionInstance.findMany({
+    const rawInstances = await prisma.examQuestionInstance.findMany({
       where: {
         question: {
           status: "PUBLISHED",
@@ -89,6 +89,7 @@ export async function POST(request: NextRequest) {
               : {}),
       },
       include: {
+        examForm: true,
         question: {
           include: {
             subjects: true,
@@ -97,10 +98,21 @@ export async function POST(request: NextRequest) {
       },
       orderBy:
         mode === "PAST_EXAM"
-          ? { originalNumber: "asc" }
-          : { createdAt: "desc" },
-      take: totalQuestions,
+          ? [{ originalNumber: "asc" }]
+          : [{ examForm: { isDefault: "desc" } }, { originalNumber: "asc" }],
+      take: totalQuestions * 3,
     });
+
+    // Deduplica por questionId para jamais repetir a mesma questão que aparece em múltiplas versões de caderno
+    const seenQuestionIds = new Set<string>();
+    const instances = [];
+    for (const inst of rawInstances) {
+      if (!seenQuestionIds.has(inst.questionId)) {
+        seenQuestionIds.add(inst.questionId);
+        instances.push(inst);
+        if (instances.length >= totalQuestions) break;
+      }
+    }
 
     if (instances.length === 0) {
       return NextResponse.json(

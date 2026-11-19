@@ -258,20 +258,20 @@ export function PlatformShell({
       <div className="flex-1 lg:pl-64 flex flex-col min-w-0">
         {/* Top Header */}
         <header className="h-16 bg-surface border-b border-border px-4 sm:px-6 lg:px-8 flex items-center justify-between gap-4 sticky top-0 z-20">
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2.5 min-w-0">
             <button
               type="button"
               onClick={() => setMobileMenuOpen(true)}
-              className="lg:hidden p-2 -ml-2 rounded-md text-muted hover:text-foreground"
+              className="lg:hidden p-2 -ml-2 rounded-md text-muted hover:text-foreground shrink-0"
               aria-label="Abrir menu de navegação"
             >
               <Menu className="w-5 h-5" />
             </button>
-            <div>
-              <h1 className="font-display text-sm sm:text-base font-semibold text-foreground">
+            <div className="min-w-0">
+              <h1 className="font-display text-sm sm:text-base font-semibold text-foreground truncate">
                 {activeNav.label}
               </h1>
-              <div className="flex items-center gap-2 text-[11px] text-muted">
+              <div className="hidden sm:flex items-center gap-2 text-[11px] text-muted">
                 <span>Foco ativo:</span>
                 <span className="font-medium text-foreground">
                   {currentTrack}

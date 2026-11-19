@@ -11,6 +11,8 @@ export type SessionUser = {
   name: string;
   role: "OWNER" | "ADMIN";
   activeTrackCode: string;
+  jti?: string;
+  iat?: number;
 };
 
 function getAuthSecretKey(): Uint8Array {
@@ -29,9 +31,10 @@ function getAuthSecretKey(): Uint8Array {
 }
 
 /**
- * Assina um token JWT de sessão para o proprietário autenticado.
+ * Assina um token JWT de sessão para o proprietário autenticado com JTI único para revogação individual.
  */
 export async function createSessionToken(user: SessionUser): Promise<string> {
+  const jti = user.jti ?? globalThis.crypto.randomUUID();
   return new SignJWT({
     sub: user.id,
     email: user.email,
@@ -40,6 +43,7 @@ export async function createSessionToken(user: SessionUser): Promise<string> {
     activeTrackCode: user.activeTrackCode,
   })
     .setProtectedHeader({ alg: "HS256" })
+    .setJti(jti)
     .setIssuedAt()
     .setExpirationTime(`${SESSION_TTL_SECONDS}s`)
     .sign(getAuthSecretKey());
@@ -70,6 +74,8 @@ export async function verifySessionToken(
         typeof payload.activeTrackCode === "string"
           ? payload.activeTrackCode
           : "TJSP",
+      jti: typeof payload.jti === "string" ? payload.jti : undefined,
+      iat: typeof payload.iat === "number" ? payload.iat : undefined,
     };
   } catch {
     return null;
@@ -79,7 +85,7 @@ export async function verifySessionToken(
 /**
  * Define o cookie HTTP-only de sessão na resposta.
  */
-export async function setSessionCookie(user: SessionUser): Promise<void> {
+export async function setSessionCookie(user: SessionUser): Promise<string> {
   const token = await createSessionToken(user);
   const cookieStore = await cookies();
   cookieStore.set(SESSION_COOKIE_NAME, token, {
@@ -89,6 +95,7 @@ export async function setSessionCookie(user: SessionUser): Promise<void> {
     path: "/",
     maxAge: SESSION_TTL_SECONDS,
   });
+  return token;
 }
 
 /**

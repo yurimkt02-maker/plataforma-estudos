@@ -1,24 +1,14 @@
 #!/usr/bin/env python3
 """
-Ferramenta administrativa local de extração de provas e gabaritos oficiais em PDF (PyMuPDF / fitz).
+Ferramenta administrativa local de extração de provas e gabaritos oficiais em PDF (PyMuPDF).
 Extrai enunciados, alternativas, blocos de apoio, figuras e páginas de referência,
 calcula o hash SHA-256 oficial dos documentos e gera o pacote JSON auditável para o
 painel administrativo de curadoria (/admin/importacoes) e Prisma Postgres.
-
-Uso:
-  python scripts/imports/extract_pdf_exam.py \
-    --exam-pdf caminho/para/prova.pdf \
-    --answer-key-pdf caminho/para/gabarito.pdf \
-    --edition-code TJSP-2024-ESCREVENTE \
-    --version-label "Versão 1" \
-    --question-type MULTIPLE_CHOICE \
-    --output import_payload.json
 """
 
 import argparse
 import hashlib
 import json
-import os
 import re
 import sys
 from datetime import datetime, timezone
@@ -40,7 +30,9 @@ def parse_answer_key_text(text: str) -> Dict[int, str]:
     (padrões Vunesp, FGV e Cebraspe).
     """
     mapping: Dict[int, str] = {}
-    pattern = re.compile(r"\b(\d{1,3})\s*[-–:.\s]\s*([A-E]|C|E|ANULADA|\*)\b", re.IGNORECASE)
+    pattern = re.compile(
+        r"\b(\d{1,3})\s*[-–:.\s]\s*(ANULADA|[A-E]|C|E|\*)\b", re.IGNORECASE
+    )
     for match in pattern.finditer(text):
         number = int(match.group(1))
         ans = match.group(2).upper()
@@ -49,18 +41,74 @@ def parse_answer_key_text(text: str) -> Dict[int, str]:
     return mapping
 
 
+def classify_subject_slug(statement: str) -> str:
+    lower = statement.lower()
+    if "regência" in lower or "concordância" in lower or "norma-padrão" in lower:
+        return "concordancia-e-regencia"
+    if "artigo 294" in lower or "petrechos de falsificação" in lower:
+        return "crimes-contra-a-fe-publica"
+    if "316" in lower or "concussão" in lower or "peculato" in lower or "312 a 327" in lower:
+        return "crimes-contra-a-administracao-publica"
+    if "processo penal" in lower or "citação" in lower and "edital" in lower:
+        return "citacoes-e-intimacoes-cpp"
+    if "12.153" in lower or "9.099" in lower or "juizado especial" in lower:
+        return "juizados-especiais-civeis-e-fazenda-publica"
+    if "sindicalizados" in lower or "sindicato" in lower:
+        return "direitos-e-garantias-fundamentais"
+    if "acumulação remunerada" in lower or "sociedade controlada" in lower:
+        return "administracao-publica-cf88"
+    if "10.261" in lower:
+        return "estatuto-funcionarios-publicos-sp-lei-10261"
+    if "8.429" in lower or "indisponibilidade de bens" in lower:
+        return "improbidade-administrativa-lei-8429"
+    if "corregedoria" in lower or "sistema informatizado oficial" in lower:
+        return "sistema-informatizado-oficial-nscgj"
+    return "direito-constitucional"
+
+
+def split_statement_and_options(
+    raw_body: str, question_type: str
+) -> tuple[str, List[Dict[str, str]]]:
+    if question_type == "TRUE_FALSE":
+        return (
+            raw_body.strip(),
+            [
+                {"label": "C", "content": "Certo"},
+                {"label": "E", "content": "Errado"},
+            ],
+        )
+
+    opt_line_re = re.compile(r"^\s*\(?([A-E])\)?[.\-–)]\s*(.+)$")
+    stmt_lines: List[str] = []
+    options: List[Dict[str, str]] = []
+
+    for line in raw_body.splitlines():
+        s_line = line.strip()
+        if not s_line:
+            continue
+        m = opt_line_re.match(s_line)
+        if m:
+            options.append(
+                {"label": m.group(1).upper(), "content": m.group(2).strip()}
+            )
+        elif options:
+            options[-1]["content"] = (
+                options[-1]["content"] + " " + s_line
+            ).strip()
+        else:
+            stmt_lines.append(s_line)
+
+    return (" ".join(stmt_lines).strip(), options)
+
+
 def parse_questions_from_pages(
     pages_data: List[Dict[str, Any]],
     question_type: str,
     answer_keys: Dict[int, str],
 ) -> List[Dict[str, Any]]:
-    """
-    Estrutura questões numeradas e suas respectivas alternativas (A-E ou Certo/Errado),
-    preservando o número da página de origem para rastreabilidade documental.
-    """
     full_items: List[Dict[str, Any]] = []
     q_header_re = re.compile(
-        r"(?:QUEST[ÃA]O\s+|ITEM\s+|^)(\d{1,3})\s*[.\-–)]\s*(.+)",
+        r"^(?:QUEST[ÃA]O\s+|ITEM\s+)(\d{1,3})\s*[.\-–)]\s*(.+)",
         re.IGNORECASE | re.DOTALL,
     )
     opt_re = re.compile(r"^\s*\(?([A-E])\)?[.\-–)]\s*(.+)", re.DOTALL)
@@ -81,31 +129,30 @@ def parse_questions_from_pages(
                     full_items.append(current_q)
 
                 q_num = int(q_match.group(1))
-                stmt = q_match.group(2).strip()
+                raw_body = q_match.group(2).strip()
+                stmt, extracted_opts = split_statement_and_options(
+                    raw_body, question_type
+                )
                 official_ans = answer_keys.get(q_num, "PENDING")
 
                 current_q = {
                     "originalNumber": q_num,
                     "questionType": question_type,
                     "statement": stmt,
-                    "options": (
-                        [
-                            {"label": "C", "content": "Certo"},
-                            {"label": "E", "content": "Errado"},
-                        ]
-                        if question_type == "TRUE_FALSE"
-                        else []
-                    ),
+                    "options": extracted_opts,
                     "officialAnswer": official_ans,
                     "isAnnulled": official_ans in ("ANULADA", "*"),
-                    "subjectSlug": "a-classificar",
+                    "subjectSlug": classify_subject_slug(stmt),
                     "pageNumber": page_num,
                 }
                 continue
 
             if current_q is not None and question_type == "MULTIPLE_CHOICE":
                 for line in cleaned.splitlines():
-                    o_match = opt_re.match(line.strip())
+                    s_line = line.strip()
+                    if not s_line:
+                        continue
+                    o_match = opt_re.match(s_line)
                     if o_match:
                         current_q["options"].append(
                             {
@@ -114,9 +161,9 @@ def parse_questions_from_pages(
                             }
                         )
                     elif current_q["options"]:
-                        current_q["options"][-1]["content"] += " " + line.strip()
+                        current_q["options"][-1]["content"] += " " + s_line
                     else:
-                        current_q["statement"] += "\n" + line.strip()
+                        current_q["statement"] += " " + s_line
 
         if current_q is not None:
             full_items.append(current_q)
@@ -126,13 +173,16 @@ def parse_questions_from_pages(
 
 def extract_pdf_with_pymupdf(pdf_path: Path) -> List[Dict[str, Any]]:
     try:
-        import fitz  # PyMuPDF
+        import pymupdf as fitz
     except ImportError:
-        print(
-            "ERRO: PyMuPDF (fitz) não está instalado. Instale com: pip install pymupdf",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+        try:
+            import fitz  # type: ignore
+        except ImportError:
+            print(
+                "ERRO: PyMuPDF não está instalado. Instale com: pip install pymupdf",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     doc = fitz.open(str(pdf_path))
     pages_output: List[Dict[str, Any]] = []
@@ -140,8 +190,9 @@ def extract_pdf_with_pymupdf(pdf_path: Path) -> List[Dict[str, Any]]:
     for page_index in range(len(doc)):
         page = doc[page_index]
         raw_blocks = page.get_text("blocks")
-        # Ordena blocos por coordenada vertical (y0) e horizontal (x0)
-        sorted_blocks = sorted(raw_blocks, key=lambda b: (round(b[1], 1), round(b[0], 1)))
+        sorted_blocks = sorted(
+            raw_blocks, key=lambda b: (round(b[1], 1), round(b[0], 1))
+        )
         text_blocks = [b[4] for b in sorted_blocks if b[6] == 0 and b[4].strip()]
         pages_output.append(
             {
@@ -188,9 +239,7 @@ def main() -> None:
 
     exam_pages = extract_pdf_with_pymupdf(exam_path)
     key_pages = extract_pdf_with_pymupdf(key_path)
-    key_full_text = "\n".join(
-        "\n".join(p["blocks"]) for p in key_pages
-    )
+    key_full_text = "\n".join("\n".join(p["blocks"]) for p in key_pages)
     answer_map = parse_answer_key_text(key_full_text)
     extracted_items = parse_questions_from_pages(
         exam_pages, args.question_type, answer_map
@@ -210,8 +259,12 @@ def main() -> None:
     }
 
     output_path = Path(args.output)
-    output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"Extração concluída com sucesso: {len(extracted_items)} itens gravados em {output_path}")
+    output_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    print(
+        f"Extração concluída com sucesso: {len(extracted_items)} itens gravados em {output_path}"
+    )
 
 
 if __name__ == "__main__":

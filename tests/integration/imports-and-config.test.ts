@@ -13,6 +13,10 @@ import {
   recordFailedLoginAttempt,
   resetLoginRateLimit,
 } from "@/lib/auth/rate-limit";
+import {
+  isSessionRevokedServerless,
+  revokeSessionServerless,
+} from "@/lib/auth/session-revocation";
 
 describe("Integração: Pipeline de Importação, Segurança e Configuração Prisma Postgres", () => {
   it("valida resolução de DATABASE_URL_POOLED e DIRECT_URL e bloqueia Prisma Accelerate", () => {
@@ -95,5 +99,20 @@ describe("Integração: Pipeline de Importação, Segurança e Configuração Pr
     expect(locked.allowed).toBe(false);
     expect(checkLoginRateLimit(key, 2000).allowed).toBe(false);
     resetLoginRateLimit(key);
+  });
+
+  it("revoga token de sessão por JTI impedindo reutilização após logout", async () => {
+    const mockSession = {
+      id: "00000000-0000-4000-8000-000000000001",
+      email: "owner@estudos.local",
+      name: "Proprietário",
+      role: "OWNER" as const,
+      activeTrackCode: "TJSP",
+      jti: "test-jti-revocation-001",
+    };
+
+    await revokeSessionServerless(mockSession);
+    const revoked = await isSessionRevokedServerless(mockSession);
+    expect(revoked).toBe(true);
   });
 });

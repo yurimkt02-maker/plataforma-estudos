@@ -2,9 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { isDatabaseConfigured, prisma } from "@/lib/db/prisma";
 import { verifyPassword } from "@/lib/auth/password";
 import {
-  checkLoginRateLimit,
-  recordFailedLoginAttempt,
-  resetLoginRateLimit,
+  checkServerlessLoginRateLimit,
+  recordServerlessFailedLoginAttempt,
+  resetServerlessLoginRateLimit,
 } from "@/lib/auth/rate-limit";
 import { setSessionCookie } from "@/lib/auth/session";
 import { loginSchema } from "@/lib/validations/schemas";
@@ -33,7 +33,7 @@ export async function POST(request: NextRequest) {
       "127.0.0.1";
     const rateKey = `${clientIp}:${email}`;
 
-    const rateCheck = checkLoginRateLimit(rateKey);
+    const rateCheck = await checkServerlessLoginRateLimit(rateKey);
     if (!rateCheck.allowed) {
       logger.warn("AUTH_LOGIN_RATE_LIMITED", { email, clientIp });
       return NextResponse.json(
@@ -52,8 +52,12 @@ export async function POST(request: NextRequest) {
         include: { settings: true },
       });
 
-      if (!user || !user.isActive || !verifyPassword(parsed.data.password, user.passwordHash)) {
-        const failed = recordFailedLoginAttempt(rateKey);
+      if (
+        !user ||
+        !user.isActive ||
+        !verifyPassword(parsed.data.password, user.passwordHash)
+      ) {
+        const failed = await recordServerlessFailedLoginAttempt(rateKey);
         logger.warn("AUTH_LOGIN_FAILED", {
           email,
           remainingAttempts: failed.remainingAttempts,
@@ -67,7 +71,7 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      resetLoginRateLimit(rateKey);
+      await resetServerlessLoginRateLimit(rateKey);
       await prisma.user.update({
         where: { id: user.id },
         data: { lastLoginAt: new Date() },
@@ -94,14 +98,12 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Caso o banco Prisma Postgres ainda não esteja conectado, permite autenticar exclusivamente
-    // se OWNER_EMAIL e OWNER_PASSWORD estiverem explicitamente configurados nas variáveis de ambiente do servidor
     const envOwnerEmail = process.env.OWNER_EMAIL?.trim().toLowerCase();
     const envOwnerPassword = process.env.OWNER_PASSWORD;
 
     if (envOwnerEmail && envOwnerPassword && envOwnerPassword.length >= 8) {
       if (email === envOwnerEmail && parsed.data.password === envOwnerPassword) {
-        resetLoginRateLimit(rateKey);
+        await resetServerlessLoginRateLimit(rateKey);
         const ownerSession = {
           id: "00000000-0000-4000-8000-000000000001",
           email: envOwnerEmail,
@@ -116,7 +118,7 @@ export async function POST(request: NextRequest) {
         });
       }
 
-      recordFailedLoginAttempt(rateKey);
+      await recordServerlessFailedLoginAttempt(rateKey);
       return NextResponse.json(
         {
           error: "INVALID_CREDENTIALS",

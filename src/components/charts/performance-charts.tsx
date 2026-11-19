@@ -29,18 +29,21 @@ export function SubjectAccuracyBarChart({
   }
 
   return (
-    <div className="h-72 w-full">
+    <div className="h-80 w-full">
       <ResponsiveContainer width="100%" height="100%">
         <BarChart
           data={data}
-          margin={{ top: 10, right: 16, left: 0, bottom: 24 }}
+          margin={{ top: 16, right: 20, left: 0, bottom: 52 }}
         >
           <CartesianGrid strokeDasharray="3 3" stroke="#E4E8ED" />
           <XAxis
             dataKey="subjectName"
             tick={{ fontSize: 11, fill: "#687585" }}
+            tickFormatter={(val: string) =>
+              val.length > 36 ? `${val.slice(0, 34)}…` : val
+            }
             interval={0}
-            angle={-12}
+            angle={-10}
             textAnchor="end"
           />
           <YAxis
@@ -61,6 +64,7 @@ export function SubjectAccuracyBarChart({
             name="Taxa de Acerto (%)"
             fill="#14877B"
             radius={[4, 4, 0, 0]}
+            isAnimationActive={false}
           />
         </BarChart>
       </ResponsiveContainer>
