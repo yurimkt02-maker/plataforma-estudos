@@ -1,0 +1,1011 @@
+// ==============================================================================
+// PRISMA SCHEMA — PLATAFORMA PESSOAL DE QUESTÕES E SIMULADOS
+// Banco de dados: Prisma Postgres (PostgreSQL)
+// ==============================================================================
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["fullTextSearchPostgres"]
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL_POOLED")
+  directUrl = env("DIRECT_URL")
+}
+
+// ==============================================================================
+// ENUMS
+// ==============================================================================
+
+enum UserRole {
+  OWNER
+  ADMIN
+}
+
+enum ThemePreference {
+  LIGHT
+  DARK
+  SYSTEM
+}
+
+enum ExamEditionStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+}
+
+enum QuestionType {
+  MULTIPLE_CHOICE
+  TRUE_FALSE
+  SHORT_ANSWER
+  ESSAY
+}
+
+enum QuestionStatus {
+  DRAFT
+  AWAITING_REVIEW
+  APPROVED
+  PUBLISHED
+  ARCHIVED
+}
+
+enum DifficultyLevel {
+  EASY
+  MEDIUM
+  HARD
+}
+
+enum AnswerKeyStatus {
+  PRELIMINARY
+  DEFINITIVE
+  RECTIFIED
+  ANNULLED
+  PENDING_VERIFICATION
+}
+
+enum AnnulledScoringPolicy {
+  AWARD_TO_ALL
+  EXCLUDE_FROM_TOTAL
+  RECALCULATE_WEIGHT
+}
+
+enum StudySessionMode {
+  PRACTICE
+  REVIEW
+  NOTEBOOK
+  FILTERED
+}
+
+enum SimulationMode {
+  CUSTOM
+  PAST_EXAM
+  WEAKNESS_FOCUS
+}
+
+enum SimulationAttemptStatus {
+  IN_PROGRESS
+  COMPLETED
+  ABANDONED
+}
+
+enum ReviewQueueStatus {
+  PENDING
+  COMPLETED
+  SNOOZED
+}
+
+enum NotebookType {
+  CUSTOM
+  AUTO_ERRORS
+  TRACK_FOCUS
+}
+
+enum SourceDocumentType {
+  EXAM_BOOKLET
+  OFFICIAL_ANSWER_KEY
+  RECTIFICATION_NOTICE
+  PUBLIC_NOTICE
+  SUPPORT_MATERIAL
+}
+
+enum VerificationStatus {
+  PENDING
+  VERIFIED
+  OUTDATED
+  DIVERGENT
+  REJECTED
+}
+
+enum ImportJobStatus {
+  PENDING
+  EXTRACTING
+  STRUCTURED
+  AWAITING_REVIEW
+  APPROVED
+  REJECTED
+  PUBLISHED
+  FAILED
+}
+
+enum LegalSourceType {
+  FEDERAL_LAW
+  STATE_LAW
+  CONSTITUTION
+  STF_PRECEDENT
+  STJ_PRECEDENT
+  SUMULA_VINCULANTE
+  SUMULA
+  ADMINISTRATIVE_RULE
+  TECHNICAL_STANDARD
+}
+
+enum ExplanationStatus {
+  PENDING_VERIFICATION
+  VERIFIED
+  POSSIBLY_OUTDATED
+  DIVERGENCE_IDENTIFIED
+  REVIEW_REQUIRED
+}
+
+// ==============================================================================
+// 0. AUTENTICAÇÃO E PREFERÊNCIAS DO USUÁRIO ÚNICO
+// ==============================================================================
+
+model User {
+  id           String    @id @default(uuid()) @db.Uuid
+  email        String    @unique
+  name         String
+  passwordHash String
+  role         UserRole  @default(OWNER)
+  isActive     Boolean   @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  settings           UserSettings?
+  studySessions      StudySession[]
+  questionAttempts   QuestionAttempt[]
+  userProgress       UserProgress[]
+  reviewQueue        ReviewQueue[]
+  bookmarks          Bookmark[]
+  studyNotes         StudyNote[]
+  savedFilters       SavedFilter[]
+  simulations        Simulation[]
+  simulationAttempts SimulationAttempt[]
+  notebooks          Notebook[]
+  questionRevisions  QuestionRevision[]
+  contentReviewLogs  ContentReviewLog[]
+}
+
+model UserSettings {
+  id                     String          @id @default(uuid()) @db.Uuid
+  userId                 String          @unique @db.Uuid
+  activeTrackCode        String          @default("TJSP")
+  theme                  ThemePreference @default(LIGHT)
+  dailyGoalQuestions     Int             @default(30)
+  hideAnnulledInPractice Boolean         @default(false)
+  spacedRepetitionConfig Json            @default("{\"intervalsDays\":[1,3,7,14,30],\"defaultEaseFactor\":2.5}")
+  updatedAt              DateTime        @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ==============================================================================
+// 6.1 CATÁLOGO ACADÊMICO E DE CONCURSOS
+// ==============================================================================
+
+model StudyTrack {
+  id           String   @id @default(uuid()) @db.Uuid
+  code         String   @unique
+  name         String
+  description  String?
+  targetRole   String
+  isActive     Boolean  @default(true)
+  displayOrder Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  positions     Position[]
+  studySessions StudySession[]
+  userProgress  UserProgress[]
+  simulations   Simulation[]
+  notebooks     Notebook[]
+
+  @@index([isActive, displayOrder])
+}
+
+model Institution {
+  id         String   @id @default(uuid()) @db.Uuid
+  name       String
+  acronym    String   @unique
+  state      String?
+  websiteUrl String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  positions Position[]
+}
+
+model ExamBoard {
+  id         String   @id @default(uuid()) @db.Uuid
+  name       String
+  acronym    String   @unique
+  websiteUrl String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  examEditions ExamEdition[]
+}
+
+model Position {
+  id            String   @id @default(uuid()) @db.Uuid
+  studyTrackId  String   @db.Uuid
+  institutionId String   @db.Uuid
+  name          String
+  code          String   @unique
+  state         String?
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  studyTrack   StudyTrack    @relation(fields: [studyTrackId], references: [id], onDelete: Restrict)
+  institution  Institution   @relation(fields: [institutionId], references: [id], onDelete: Restrict)
+  examEditions ExamEdition[]
+
+  @@index([studyTrackId, isActive])
+  @@index([institutionId])
+}
+
+model ExamEdition {
+  id                String            @id @default(uuid()) @db.Uuid
+  positionId        String            @db.Uuid
+  examBoardId       String            @db.Uuid
+  rulesetId         String            @db.Uuid
+  title             String
+  year              Int
+  examDate          DateTime?
+  phase             String            @default("1ª Fase - Prova Objetiva")
+  editionCode       String            @unique
+  officialNoticeUrl String?
+  status            ExamEditionStatus @default(ACTIVE)
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  position        Position         @relation(fields: [positionId], references: [id], onDelete: Restrict)
+  examBoard       ExamBoard        @relation(fields: [examBoardId], references: [id], onDelete: Restrict)
+  ruleset         ExamRuleset      @relation(fields: [rulesetId], references: [id], onDelete: Restrict)
+  examForms       ExamForm[]
+  sourceDocuments SourceDocument[]
+  simulations     Simulation[]
+  importJobs      ImportJob[]
+
+  @@index([positionId, examBoardId, year])
+  @@index([examBoardId, year])
+  @@index([status])
+}
+
+model ExamForm {
+  id            String   @id @default(uuid()) @db.Uuid
+  examEditionId String   @db.Uuid
+  versionLabel  String
+  colorOrType   String?
+  language      String   @default("pt-BR")
+  notes         String?
+  isDefault     Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  examEdition       ExamEdition            @relation(fields: [examEditionId], references: [id], onDelete: Cascade)
+  questionInstances ExamQuestionInstance[]
+  sourceDocuments   SourceDocument[]
+  simulations       Simulation[]
+  importJobs        ImportJob[]
+
+  @@unique([examEditionId, versionLabel])
+  @@index([examEditionId])
+}
+
+model Subject {
+  id             String   @id @default(uuid()) @db.Uuid
+  parentId       String?  @db.Uuid
+  name           String
+  slug           String   @unique
+  code           String?  @unique
+  isLegalSubject Boolean  @default(false)
+  displayOrder   Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  parent           Subject?          @relation("SubjectHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
+  children         Subject[]         @relation("SubjectHierarchy")
+  questionSubjects QuestionSubject[]
+  userProgress     UserProgress[]
+  simulationItems  SimulationItem[]
+
+  @@index([parentId, displayOrder])
+}
+
+model QuestionSubject {
+  id         String  @id @default(uuid()) @db.Uuid
+  questionId String  @db.Uuid
+  subjectId  String  @db.Uuid
+  isPrimary  Boolean @default(false)
+
+  question Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  subject  Subject  @relation(fields: [subjectId], references: [id], onDelete: Restrict)
+
+  @@unique([questionId, subjectId])
+  @@index([subjectId, isPrimary])
+  @@index([questionId])
+}
+
+// ==============================================================================
+// 6.2 QUESTÕES E GABARITOS OFICIAIS VERSIONADOS
+// ==============================================================================
+
+model Question {
+  id            String          @id @default(uuid()) @db.Uuid
+  questionType  QuestionType    @default(MULTIPLE_CHOICE)
+  statement     String
+  supportText   String?
+  instruction   String?
+  status        QuestionStatus  @default(DRAFT)
+  difficulty    DifficultyLevel @default(MEDIUM)
+  canonicalHash String          @unique
+  isOutdated    Boolean         @default(false)
+  outdatedNotes String?
+  importedAt    DateTime        @default(now())
+  validatedAt   DateTime?
+  publishedAt   DateTime?
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  options           QuestionOption[]
+  assets            QuestionAsset[]
+  subjects          QuestionSubject[]
+  examInstances     ExamQuestionInstance[]
+  revisions         QuestionRevision[]
+  sources           QuestionSource[]
+  attempts          QuestionAttempt[]
+  reviewQueueItems  ReviewQueue[]
+  bookmarks         Bookmark[]
+  studyNotes        StudyNote[]
+  simulationItems   SimulationItem[]
+  notebookQuestions NotebookQuestion[]
+  explanations      QuestionExplanation[]
+  importJobItems    ImportJobItem[]
+
+  @@index([status, difficulty])
+  @@index([status, isOutdated])
+  @@index([publishedAt])
+}
+
+model QuestionOption {
+  id           String @id @default(uuid()) @db.Uuid
+  questionId   String @db.Uuid
+  label        String
+  content      String
+  displayOrder Int
+
+  question Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@unique([questionId, label])
+  @@index([questionId, displayOrder])
+}
+
+model QuestionAsset {
+  id          String   @id @default(uuid()) @db.Uuid
+  questionId  String   @db.Uuid
+  assetType   String
+  storagePath String
+  objectUrl   String?
+  sha256      String?
+  caption     String?
+  position    Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  question Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@index([questionId, position])
+}
+
+model ExamQuestionInstance {
+  id              String   @id @default(uuid()) @db.Uuid
+  examFormId      String   @db.Uuid
+  questionId      String   @db.Uuid
+  originalNumber  Int
+  displayOrder    Int
+  optionMapping   Json?
+  isAnnulled      Boolean  @default(false)
+  annulmentReason String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  examForm          ExamForm            @relation(fields: [examFormId], references: [id], onDelete: Cascade)
+  question          Question            @relation(fields: [questionId], references: [id], onDelete: Restrict)
+  answerKeys        OfficialAnswerKey[]
+  questionAttempts  QuestionAttempt[]
+  reviewQueueItems  ReviewQueue[]
+  simulationItems   SimulationItem[]
+  notebookQuestions NotebookQuestion[]
+
+  @@unique([examFormId, originalNumber])
+  @@unique([examFormId, questionId])
+  @@index([questionId])
+  @@index([examFormId, displayOrder])
+}
+
+model QuestionRevision {
+  id               String   @id @default(uuid()) @db.Uuid
+  questionId       String   @db.Uuid
+  versionNumber    Int
+  previousSnapshot Json
+  newSnapshot      Json
+  reason           String
+  changedByUserId  String?  @db.Uuid
+  createdAt        DateTime @default(now())
+
+  question      Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  changedByUser User?    @relation(fields: [changedByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([questionId, versionNumber])
+  @@index([questionId])
+}
+
+model OfficialAnswerKey {
+  id                     String          @id @default(uuid()) @db.Uuid
+  examQuestionInstanceId String          @db.Uuid
+  sourceDocumentId       String?         @db.Uuid
+  answerValue            String
+  status                 AnswerKeyStatus @default(DEFINITIVE)
+  revisionNumber         Int             @default(1)
+  isDefinitive           Boolean         @default(true)
+  justification          String?
+  publishedAt            DateTime        @default(now())
+  createdAt              DateTime        @default(now())
+
+  examQuestionInstance ExamQuestionInstance  @relation(fields: [examQuestionInstanceId], references: [id], onDelete: Cascade)
+  sourceDocument       SourceDocument?       @relation(fields: [sourceDocumentId], references: [id], onDelete: SetNull)
+  questionAttempts     QuestionAttempt[]
+  simulationResponses  SimulationResponse[]
+  explanations         QuestionExplanation[]
+
+  @@unique([examQuestionInstanceId, revisionNumber])
+  @@index([examQuestionInstanceId, isDefinitive])
+  @@index([status])
+}
+
+// ==============================================================================
+// 6.3 HISTÓRICO DO USUÁRIO, REVISÕES E ANOTAÇÕES
+// ==============================================================================
+
+model StudySession {
+  id             String           @id @default(uuid()) @db.Uuid
+  userId         String           @db.Uuid
+  trackId        String?          @db.Uuid
+  mode           StudySessionMode @default(PRACTICE)
+  title          String?
+  filtersJson    Json             @default("{}")
+  totalQuestions Int              @default(0)
+  answeredCount  Int              @default(0)
+  correctCount   Int              @default(0)
+  startedAt      DateTime         @default(now())
+  finishedAt     DateTime?
+
+  user     User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  track    StudyTrack?       @relation(fields: [trackId], references: [id], onDelete: SetNull)
+  attempts QuestionAttempt[]
+
+  @@index([userId, startedAt])
+  @@index([userId, trackId])
+}
+
+model QuestionAttempt {
+  id                     String   @id @default(uuid()) @db.Uuid
+  userId                 String   @db.Uuid
+  questionId             String   @db.Uuid
+  examQuestionInstanceId String   @db.Uuid
+  studySessionId         String?  @db.Uuid
+  officialKeyRevisionId  String   @db.Uuid
+  selectedAnswer         String?
+  isBlank                Boolean  @default(false)
+  isCorrect              Boolean
+  awardedPoints          Decimal  @default(0) @db.Decimal(6, 2)
+  timeSpentSeconds       Int      @default(0)
+  attemptNumber          Int      @default(1)
+  idempotencyKey         String?  @unique
+  answeredAt             DateTime @default(now())
+
+  user                 User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  question             Question             @relation(fields: [questionId], references: [id], onDelete: Restrict)
+  examQuestionInstance ExamQuestionInstance @relation(fields: [examQuestionInstanceId], references: [id], onDelete: Restrict)
+  studySession         StudySession?        @relation(fields: [studySessionId], references: [id], onDelete: SetNull)
+  officialKeyRevision  OfficialAnswerKey    @relation(fields: [officialKeyRevisionId], references: [id], onDelete: Restrict)
+
+  @@index([userId, answeredAt])
+  @@index([userId, isCorrect])
+  @@index([userId, questionId, attemptNumber])
+  @@index([questionId])
+}
+
+model UserProgress {
+  id                            String    @id @default(uuid()) @db.Uuid
+  userId                        String    @db.Uuid
+  studyTrackId                  String    @db.Uuid
+  subjectId                     String    @db.Uuid
+  uniqueQuestionsAttempted      Int       @default(0)
+  uniqueQuestionsCorrectFirstTry Int      @default(0)
+  uniqueQuestionsRecovered      Int       @default(0)
+  totalAttempts                 Int       @default(0)
+  totalCorrectAttempts          Int       @default(0)
+  totalTimeSpentSeconds         Int       @default(0)
+  accuracyRate                  Decimal   @default(0) @db.Decimal(5, 2)
+  lastAnsweredAt                DateTime?
+  updatedAt                     DateTime  @updatedAt
+
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  studyTrack StudyTrack @relation(fields: [studyTrackId], references: [id], onDelete: Cascade)
+  subject    Subject    @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, studyTrackId, subjectId])
+  @@index([userId, studyTrackId])
+}
+
+model ReviewQueue {
+  id                     String            @id @default(uuid()) @db.Uuid
+  userId                 String            @db.Uuid
+  questionId             String            @db.Uuid
+  examQuestionInstanceId String            @db.Uuid
+  status                 ReviewQueueStatus @default(PENDING)
+  priority               Int               @default(1)
+  intervalDays           Int               @default(1)
+  easeFactor             Decimal           @default(2.50) @db.Decimal(4, 2)
+  consecutiveCorrect     Int               @default(0)
+  errorCount             Int               @default(1)
+  declaredDifficulty     DifficultyLevel?
+  lastReviewedAt         DateTime?
+  nextReviewAt           DateTime
+  createdAt              DateTime          @default(now())
+  updatedAt              DateTime          @updatedAt
+
+  user                 User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  question             Question             @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  examQuestionInstance ExamQuestionInstance @relation(fields: [examQuestionInstanceId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, questionId])
+  @@index([userId, status, nextReviewAt])
+  @@index([userId, priority])
+}
+
+model Bookmark {
+  id         String   @id @default(uuid()) @db.Uuid
+  userId     String   @db.Uuid
+  questionId String   @db.Uuid
+  tag        String?
+  createdAt  DateTime @default(now())
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  question Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, questionId])
+  @@index([userId, createdAt])
+}
+
+model StudyNote {
+  id         String   @id @default(uuid()) @db.Uuid
+  userId     String   @db.Uuid
+  questionId String   @db.Uuid
+  content    String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  question Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, questionId])
+}
+
+model SavedFilter {
+  id             String   @id @default(uuid()) @db.Uuid
+  userId         String   @db.Uuid
+  name           String
+  studyTrackCode String?
+  filtersJson    Json
+  isPinned       Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isPinned])
+}
+
+// ==============================================================================
+// 6.4 SIMULADOS E MOTOR DE REGRAS DE PONTUAÇÃO
+// ==============================================================================
+
+model ExamRuleset {
+  id                   String                @id @default(uuid()) @db.Uuid
+  name                 String
+  code                 String                @unique
+  questionType         QuestionType          @default(MULTIPLE_CHOICE)
+  optionsCount         Int                   @default(5)
+  correctPoints        Decimal               @default(1.00) @db.Decimal(6, 2)
+  wrongPoints          Decimal               @default(0.00) @db.Decimal(6, 2)
+  blankPoints          Decimal               @default(0.00) @db.Decimal(6, 2)
+  annulledPolicy       AnnulledScoringPolicy @default(AWARD_TO_ALL)
+  minPassingPercentage Decimal               @default(50.00) @db.Decimal(5, 2)
+  passingRulesJson     Json                  @default("{}")
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+
+  examEditions ExamEdition[]
+}
+
+model Simulation {
+  id                String         @id @default(uuid()) @db.Uuid
+  userId            String         @db.Uuid
+  studyTrackId      String?        @db.Uuid
+  examEditionId     String?        @db.Uuid
+  examFormId        String?        @db.Uuid
+  title             String
+  mode              SimulationMode @default(CUSTOM)
+  durationMinutes   Int            @default(240)
+  totalQuestions    Int
+  rulesetSnapshot   Json
+  configurationJson Json           @default("{}")
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  studyTrack  StudyTrack?         @relation(fields: [studyTrackId], references: [id], onDelete: SetNull)
+  examEdition ExamEdition?        @relation(fields: [examEditionId], references: [id], onDelete: SetNull)
+  examForm    ExamForm?           @relation(fields: [examFormId], references: [id], onDelete: SetNull)
+  items       SimulationItem[]
+  attempts    SimulationAttempt[]
+
+  @@index([userId, createdAt])
+  @@index([studyTrackId, mode])
+}
+
+model SimulationItem {
+  id                     String  @id @default(uuid()) @db.Uuid
+  simulationId           String  @db.Uuid
+  questionId             String  @db.Uuid
+  examQuestionInstanceId String  @db.Uuid
+  subjectId              String? @db.Uuid
+  position               Int
+  weight                 Decimal @default(1.00) @db.Decimal(5, 2)
+
+  simulation           Simulation           @relation(fields: [simulationId], references: [id], onDelete: Cascade)
+  question             Question             @relation(fields: [questionId], references: [id], onDelete: Restrict)
+  examQuestionInstance ExamQuestionInstance @relation(fields: [examQuestionInstanceId], references: [id], onDelete: Restrict)
+  subject              Subject?             @relation(fields: [subjectId], references: [id], onDelete: SetNull)
+  responses            SimulationResponse[]
+
+  @@unique([simulationId, position])
+  @@unique([simulationId, questionId])
+  @@index([simulationId])
+}
+
+model SimulationAttempt {
+  id               String                  @id @default(uuid()) @db.Uuid
+  userId           String                  @db.Uuid
+  simulationId     String                  @db.Uuid
+  status           SimulationAttemptStatus @default(IN_PROGRESS)
+  startedAt        DateTime                @default(now())
+  finishedAt       DateTime?
+  timeSpentSeconds Int                     @default(0)
+  rawScore         Decimal                 @default(0) @db.Decimal(8, 2)
+  netScore         Decimal                 @default(0) @db.Decimal(8, 2)
+  maxScore         Decimal                 @default(0) @db.Decimal(8, 2)
+  percentageScore  Decimal                 @default(0) @db.Decimal(5, 2)
+  correctCount     Int                     @default(0)
+  wrongCount       Int                     @default(0)
+  blankCount       Int                     @default(0)
+  annulledCount    Int                     @default(0)
+  breakdownJson    Json                    @default("{}")
+
+  user       User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  simulation Simulation           @relation(fields: [simulationId], references: [id], onDelete: Cascade)
+  responses  SimulationResponse[]
+
+  @@index([userId, status, startedAt])
+  @@index([simulationId])
+}
+
+model SimulationResponse {
+  id                    String    @id @default(uuid()) @db.Uuid
+  simulationAttemptId   String    @db.Uuid
+  simulationItemId      String    @db.Uuid
+  officialKeyRevisionId String?   @db.Uuid
+  selectedAnswer        String?
+  isBlank               Boolean   @default(true)
+  isCorrect             Boolean   @default(false)
+  isAnnulled            Boolean   @default(false)
+  markedForReview       Boolean   @default(false)
+  awardedPoints         Decimal   @default(0) @db.Decimal(6, 2)
+  timeSpentSeconds      Int       @default(0)
+  answeredAt            DateTime?
+
+  simulationAttempt   SimulationAttempt  @relation(fields: [simulationAttemptId], references: [id], onDelete: Cascade)
+  simulationItem      SimulationItem     @relation(fields: [simulationItemId], references: [id], onDelete: Cascade)
+  officialKeyRevision OfficialAnswerKey? @relation(fields: [officialKeyRevisionId], references: [id], onDelete: SetNull)
+
+  @@unique([simulationAttemptId, simulationItemId])
+  @@index([simulationAttemptId])
+}
+
+// ==============================================================================
+// 6.5 CADERNOS DE ESTUDO E CADERNO AUTOMÁTICO DE ERROS
+// ==============================================================================
+
+model Notebook {
+  id                 String       @id @default(uuid()) @db.Uuid
+  userId             String       @db.Uuid
+  studyTrackId       String?      @db.Uuid
+  name               String
+  description        String?
+  notebookType       NotebookType @default(CUSTOM)
+  isSystemAutoErrors Boolean      @default(false)
+  colorHex           String       @default("#183A54")
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+
+  user       User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  studyTrack StudyTrack?        @relation(fields: [studyTrackId], references: [id], onDelete: SetNull)
+  questions  NotebookQuestion[]
+
+  @@index([userId, isSystemAutoErrors])
+  @@index([userId, studyTrackId])
+}
+
+model NotebookQuestion {
+  id                     String   @id @default(uuid()) @db.Uuid
+  notebookId             String   @db.Uuid
+  questionId             String   @db.Uuid
+  examQuestionInstanceId String?  @db.Uuid
+  addedReason            String?
+  position               Int      @default(0)
+  addedAt                DateTime @default(now())
+
+  notebook             Notebook              @relation(fields: [notebookId], references: [id], onDelete: Cascade)
+  question             Question              @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  examQuestionInstance ExamQuestionInstance? @relation(fields: [examQuestionInstanceId], references: [id], onDelete: SetNull)
+
+  @@unique([notebookId, questionId])
+  @@index([notebookId, position])
+}
+
+// ==============================================================================
+// 6.6 IMPORTAÇÃO DE PROVAS E AUDITORIA DOCUMENTAL
+// ==============================================================================
+
+model SourceDocument {
+  id                 String             @id @default(uuid()) @db.Uuid
+  examEditionId      String             @db.Uuid
+  examFormId         String?            @db.Uuid
+  documentType       SourceDocumentType
+  title              String
+  officialUrl        String
+  storageKey         String?
+  sha256             String             @unique
+  fileSizeBytes      Int?
+  mimeType           String             @default("application/pdf")
+  versionLabel       String?
+  sourceDate         DateTime?
+  retrievedAt        DateTime           @default(now())
+  rightsNotes        String?
+  verificationStatus VerificationStatus @default(VERIFIED)
+
+  examEdition      ExamEdition         @relation(fields: [examEditionId], references: [id], onDelete: Restrict)
+  examForm         ExamForm?           @relation(fields: [examFormId], references: [id], onDelete: SetNull)
+  questionSources  QuestionSource[]
+  answerKeys       OfficialAnswerKey[]
+  examPdfJobs      ImportJob[]         @relation("ImportJobExamPdf")
+  answerKeyPdfJobs ImportJob[]         @relation("ImportJobAnswerKey")
+
+  @@index([examEditionId, documentType])
+  @@index([verificationStatus])
+}
+
+model QuestionSource {
+  id                   String   @id @default(uuid()) @db.Uuid
+  questionId           String   @db.Uuid
+  sourceDocumentId     String   @db.Uuid
+  pageNumber           Int?
+  sourceReference      String?
+  extractedSnippetHash String?
+  createdAt            DateTime @default(now())
+
+  question       Question       @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  sourceDocument SourceDocument @relation(fields: [sourceDocumentId], references: [id], onDelete: Restrict)
+
+  @@unique([questionId, sourceDocumentId])
+  @@index([sourceDocumentId, pageNumber])
+}
+
+model ImportJob {
+  id                  String          @id @default(uuid()) @db.Uuid
+  examEditionId       String          @db.Uuid
+  examFormId          String          @db.Uuid
+  examPdfDocumentId   String          @db.Uuid
+  answerKeyDocumentId String?         @db.Uuid
+  status              ImportJobStatus @default(PENDING)
+  currentStage        String          @default("REGISTERED")
+  totalDetected       Int             @default(0)
+  totalStructured     Int             @default(0)
+  totalValidated      Int             @default(0)
+  totalPublished      Int             @default(0)
+  errorMessage        String?
+  logsJson            Json            @default("[]")
+  idempotencyKey      String          @unique
+  startedAt           DateTime?
+  finishedAt          DateTime?
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
+
+  examEdition       ExamEdition     @relation(fields: [examEditionId], references: [id], onDelete: Restrict)
+  examForm          ExamForm        @relation(fields: [examFormId], references: [id], onDelete: Restrict)
+  examPdfDocument   SourceDocument  @relation("ImportJobExamPdf", fields: [examPdfDocumentId], references: [id], onDelete: Restrict)
+  answerKeyDocument SourceDocument? @relation("ImportJobAnswerKey", fields: [answerKeyDocumentId], references: [id], onDelete: SetNull)
+  items             ImportJobItem[]
+
+  @@index([status, createdAt])
+  @@index([examEditionId, examFormId])
+}
+
+model ImportJobItem {
+  id                    String             @id @default(uuid()) @db.Uuid
+  importJobId           String             @db.Uuid
+  questionId            String?            @db.Uuid
+  originalNumber        Int
+  rawExtractedText      String
+  structuredPayloadJson Json
+  detectedAnswerKey     String?
+  validationStatus      VerificationStatus @default(PENDING)
+  validationErrorsJson  Json               @default("[]")
+  reviewerNotes         String?
+  reviewedAt            DateTime?
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+
+  importJob ImportJob @relation(fields: [importJobId], references: [id], onDelete: Cascade)
+  question  Question? @relation(fields: [questionId], references: [id], onDelete: SetNull)
+
+  @@unique([importJobId, originalNumber])
+  @@index([importJobId, validationStatus])
+}
+
+model ContentReviewLog {
+  id             String   @id @default(uuid()) @db.Uuid
+  entityType     String
+  entityId       String   @db.Uuid
+  action         String
+  previousStatus String?
+  newStatus      String?
+  notes          String?
+  metadataJson   Json     @default("{}")
+  reviewerUserId String?  @db.Uuid
+  createdAt      DateTime @default(now())
+
+  reviewerUser User? @relation(fields: [reviewerUserId], references: [id], onDelete: SetNull)
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}
+
+// ==============================================================================
+// 6.7 CONHECIMENTO JURÍDICO E EXPLICAÇÕES VERIFICÁVEIS
+// ==============================================================================
+
+model LegalSource {
+  id                 String             @id @default(uuid()) @db.Uuid
+  sourceType         LegalSourceType
+  authority          String
+  title              String
+  officialUrl        String
+  documentNumber     String?
+  jurisdiction       String             @default("BR-FEDERAL")
+  publishedAt        DateTime?
+  effectiveFrom      DateTime?
+  effectiveTo        DateTime?
+  lastCheckedAt      DateTime           @default(now())
+  verificationStatus VerificationStatus @default(VERIFIED)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  passages     LegalPassage[]
+  citations    ExplanationCitation[]
+  updateChecks LegalUpdateCheck[]
+
+  @@index([sourceType, verificationStatus])
+  @@index([authority, documentNumber])
+}
+
+model LegalPassage {
+  id                 String    @id @default(uuid()) @db.Uuid
+  legalSourceId      String    @db.Uuid
+  referenceLabel     String
+  content            String
+  textHash           String
+  effectiveFrom      DateTime?
+  effectiveTo        DateTime?
+  isCurrentlyInForce Boolean   @default(true)
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  legalSource LegalSource           @relation(fields: [legalSourceId], references: [id], onDelete: Cascade)
+  citations   ExplanationCitation[]
+
+  @@unique([legalSourceId, referenceLabel, textHash])
+  @@index([legalSourceId, isCurrentlyInForce])
+}
+
+model QuestionExplanation {
+  id                       String            @id @default(uuid()) @db.Uuid
+  questionId               String            @db.Uuid
+  officialKeyRevisionId    String            @db.Uuid
+  status                   ExplanationStatus @default(PENDING_VERIFICATION)
+  summary                  String
+  correctOptionAnalysis    String
+  wrongOptionsAnalysisJson Json              @default("{}")
+  historicalUnderstanding  String
+  currentUnderstanding     String
+  hasDivergenceOrUpdate    Boolean           @default(false)
+  divergenceNote           String?
+  modelId                  String
+  promptVersion            String            @default("v1.0")
+  sourceSnapshotHash       String
+  generatedAt              DateTime          @default(now())
+  verifiedAt               DateTime?
+  lastCheckedAt            DateTime          @default(now())
+  createdAt                DateTime          @default(now())
+  updatedAt                DateTime          @updatedAt
+
+  question            Question              @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  officialKeyRevision OfficialAnswerKey     @relation(fields: [officialKeyRevisionId], references: [id], onDelete: Restrict)
+  citations           ExplanationCitation[]
+  updateChecks        LegalUpdateCheck[]
+
+  @@unique([questionId, officialKeyRevisionId, sourceSnapshotHash])
+  @@index([questionId, status])
+  @@index([status])
+}
+
+model ExplanationCitation {
+  id                   String   @id @default(uuid()) @db.Uuid
+  explanationId        String   @db.Uuid
+  legalSourceId        String   @db.Uuid
+  legalPassageId       String?  @db.Uuid
+  claimReference       String
+  quotedSnippet        String?
+  isVerifiedAtExamDate Boolean  @default(true)
+  isVerifiedCurrently  Boolean  @default(true)
+  createdAt            DateTime @default(now())
+
+  explanation  QuestionExplanation @relation(fields: [explanationId], references: [id], onDelete: Cascade)
+  legalSource  LegalSource         @relation(fields: [legalSourceId], references: [id], onDelete: Restrict)
+  legalPassage LegalPassage?       @relation(fields: [legalPassageId], references: [id], onDelete: SetNull)
+
+  @@index([explanationId])
+  @@index([legalSourceId])
+}
+
+model LegalUpdateCheck {
+  id              String   @id @default(uuid()) @db.Uuid
+  legalSourceId   String   @db.Uuid
+  explanationId   String?  @db.Uuid
+  checkStatus     String
+  changeDetected  Boolean  @default(false)
+  findingsSummary String
+  previousHash    String?
+  newHash         String?
+  checkedAt       DateTime @default(now())
+
+  legalSource LegalSource          @relation(fields: [legalSourceId], references: [id], onDelete: Cascade)
+  explanation QuestionExplanation? @relation(fields: [explanationId], references: [id], onDelete: SetNull)
+
+  @@index([legalSourceId, checkedAt])
+}
