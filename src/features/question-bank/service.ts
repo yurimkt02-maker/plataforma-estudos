@@ -326,6 +326,7 @@ export type QuestionBankListItem = {
   sourcePageNumber: number | null;
   subjects: Array<{ id: string; name: string; slug: string }>;
   options: Array<{ id: string; label: string; content: string }>;
+  assets: Array<{ id: string; url: string; caption: string | null }>;
   hasVerifiedExplanation: boolean;
   userHistory: {
     attemptCount: number;
@@ -453,6 +454,7 @@ export async function searchPublishedQuestions(params: {
             : { publishedAt: "desc" },
         include: {
           options: { orderBy: { displayOrder: "asc" } },
+          assets: { orderBy: { position: "asc" } },
           subjects: { include: { subject: true } },
           sources: { include: { sourceDocument: true } },
           explanations: {
@@ -529,6 +531,11 @@ export async function searchPublishedQuestions(params: {
             id: o.id,
             label: o.label,
             content: o.content,
+          })),
+          assets: q.assets.map((a) => ({
+            id: a.id,
+            url: a.objectUrl || a.storagePath,
+            caption: a.caption,
           })),
           hasVerifiedExplanation: q.explanations.length > 0,
           userHistory: {

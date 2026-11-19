@@ -35,6 +35,7 @@ export default async function SingleQuestionPage({
     where: { id },
     include: {
       options: { orderBy: { displayOrder: "asc" } },
+      assets: { orderBy: { position: "asc" } },
       subjects: { include: { subject: true } },
       sources: { include: { sourceDocument: true } },
       explanations: {
@@ -111,6 +112,11 @@ export default async function SingleQuestionPage({
       id: o.id,
       label: o.label,
       content: o.content,
+    })),
+    assets: q.assets.map((a) => ({
+      id: a.id,
+      url: a.objectUrl || a.storagePath,
+      caption: a.caption,
     })),
     hasVerifiedExplanation: q.explanations.length > 0,
     userHistory: {

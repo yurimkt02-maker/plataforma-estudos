@@ -202,6 +202,29 @@ export function QuestionWorkspaceCard({
           {question.statement}
         </div>
 
+        {question.assets && question.assets.length > 0 && (
+          <div className="space-y-3 pt-1">
+            {question.assets.map((asset) => (
+              <figure
+                key={asset.id}
+                className="p-3 rounded-lg bg-white border border-border inline-block max-w-full"
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={asset.url}
+                  alt={asset.caption || `Figura oficial da questão #${question.originalNumber}`}
+                  className="max-w-full h-auto rounded"
+                />
+                {asset.caption && (
+                  <figcaption className="text-[11px] text-muted mt-1.5">
+                    {asset.caption}
+                  </figcaption>
+                )}
+              </figure>
+            ))}
+          </div>
+        )}
+
         {/* Alternativas ou Certo/Errado */}
         <div
           role="radiogroup"
