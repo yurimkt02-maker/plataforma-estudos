@@ -1,4 +1,4 @@
-import { extractText } from "unpdf";
+import { extractText, getDocumentProxy } from "unpdf";
 
 export const CLASSIFICATION_PENDING_SLUG = "CLASSIFICATION_PENDING";
 
@@ -17,17 +17,113 @@ export type ParsedPdfQuestionItem = {
   pageNumber: number;
 };
 
+type PdfTextItem = {
+  str?: string;
+  transform?: number[];
+  width?: number;
+};
+
+function groupItemsIntoLines(items: Array<{ str: string; x: number; y: number }>): string[] {
+  if (items.length === 0) return [];
+  // Ordenar de cima para baixo (y decrescente no PDF) e esquerda para direita (x crescente)
+  const sorted = [...items].sort((a, b) => {
+    if (Math.abs(a.y - b.y) > 3.5) return b.y - a.y;
+    return a.x - b.x;
+  });
+
+  const lines: Array<{ y: number; parts: Array<{ x: number; str: string }> }> = [];
+  for (const it of sorted) {
+    const last = lines[lines.length - 1];
+    if (last && Math.abs(last.y - it.y) <= 3.5) {
+      last.parts.push({ x: it.x, str: it.str });
+    } else {
+      lines.push({ y: it.y, parts: [{ x: it.x, str: it.str }] });
+    }
+  }
+
+  return lines
+    .map((line) => {
+      line.parts.sort((a, b) => a.x - b.x);
+      return line.parts
+        .map((p) => p.str)
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .replace(/\bR\s*A\s*S\s*C\s*U\s*N\s*H\s*O\b/gi, "")
+        .replace(/\s+/g, " ")
+        .trim();
+    })
+    .filter(Boolean);
+}
+
 /**
- * Extrai texto página a página de um buffer PDF usando unpdf (compatível com Vercel Serverless).
+ * Extrai texto página a página de um buffer PDF usando coordenadas reais (x, y) via unpdf/pdf.js,
+ * reconstruindo corretamente PDFs de 2 colunas (como Vunesp, FGV e Cebraspe) na ordem real de
+ * leitura (coluna esquerda de cima para baixo, seguida da coluna direita de cima para baixo),
+ * independentemente da ordem interna do stream PDF.
  */
 export async function extractPdfPages(buffer: ArrayBuffer | Uint8Array): Promise<string[]> {
   const source = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
-  // Cria uma cópia isolada com ArrayBuffer próprio para evitar que o pdf.js (unpdf)
-  // desanexe (detach) o ArrayBuffer compartilhado do pool do Node.js ou o Buffer original.
   const isolatedCopy = new Uint8Array(source.byteLength);
   isolatedCopy.set(source);
-  const { text } = await extractText(isolatedCopy, { mergePages: false });
-  return Array.isArray(text) ? text : [String(text ?? "")];
+
+  try {
+    const pdf = await getDocumentProxy(isolatedCopy);
+    const pages: string[] = [];
+
+    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+      const page = await pdf.getPage(pageNum);
+      const viewport = page.getViewport({ scale: 1.0 });
+      const pageWidth = viewport.width || 595;
+      const pageHeight = viewport.height || 842;
+      const midX = pageWidth / 2;
+
+      const content = await page.getTextContent();
+      const rawItems = (content.items as PdfTextItem[])
+        .map((it) => ({
+          str: (it.str ?? "").replace(/\u00ad/g, ""), // remover soft hyphen
+          x: it.transform?.[4] ?? 0,
+          y: it.transform?.[5] ?? 0,
+          w: it.width ?? 0,
+        }))
+        .filter((it) => it.str.trim().length > 0)
+        // Ignorar cabeçalho/rodapé de página Vunesp (y muito próximo ao topo/rodapé)
+        .filter((it) => it.y < pageHeight - 30 && it.y > 22);
+
+      // Detectar se a página usa layout de 2 colunas:
+      // itens significativos com início à esquerda (x < midX - 25) e à direita (x >= midX - 5)
+      // e poucos itens atravessando o meio da página (x < midX - 20 && x + w > midX + 20)
+      const leftOnly = rawItems.filter((it) => it.x < midX - 8 && it.x + it.w <= midX + 18);
+      const rightOnly = rawItems.filter((it) => it.x >= midX - 8);
+      const spanning = rawItems.filter((it) => it.x < midX - 25 && it.x + it.w > midX + 25);
+
+      const isTwoColumn =
+        leftOnly.length >= 12 &&
+        rightOnly.length >= 12 &&
+        spanning.length < Math.min(leftOnly.length, rightOnly.length) * 0.25;
+
+      let pageLines: string[];
+      if (isTwoColumn) {
+        const leftItems = rawItems.filter((it) => it.x < midX - 5);
+        const rightItems = rawItems.filter((it) => it.x >= midX - 5);
+        pageLines = [
+          ...groupItemsIntoLines(leftItems),
+          ...groupItemsIntoLines(rightItems),
+        ];
+      } else {
+        pageLines = groupItemsIntoLines(rawItems);
+      }
+
+      pages.push(pageLines.join("\n"));
+    }
+
+    return pages;
+  } catch {
+    // Fallback seguro para extractText caso algum PDF exótico falhe em getDocumentProxy
+    const fallbackCopy = new Uint8Array(source.byteLength);
+    fallbackCopy.set(source);
+    const { text } = await extractText(fallbackCopy, { mergePages: false });
+    return Array.isArray(text) ? text : [String(text ?? "")];
+  }
 }
 
 /**
@@ -251,7 +347,7 @@ export function detectMissingVisualOrTable(text: string): {
   visualWarning?: string;
 } {
   const match = text.match(
-    /\b(figura\s*(?:a seguir|abaixo|seguinte|precedente|acima|\d+)?|imagem\s*(?:abaixo|a seguir|seguinte)?|gr[aá]fico|tabela\s*(?:a seguir|abaixo|seguinte|\d+)?|quadro\s*(?:a seguir|abaixo|seguinte)|charge|tirinha|tira\s+de|mapa\s*(?:a seguir|abaixo)?|esquema\s*(?:a seguir|abaixo)|diagrama|ilustra[çc][ãa]o|observe\s+a\s+figura)\b/i
+    /\b(figura\s*(?:a seguir|abaixo|seguinte|precedente|acima|\d+)?|imagem\s*(?:abaixo|a seguir|seguinte)?|gr[aá]fico|tabela\s*(?:a seguir|abaixo|seguinte|\d+)?|quadro\s*(?:a seguir|abaixo|seguinte)|planilha\s*(?:a seguir|abaixo|seguinte|do excel|eletr[ôo]nica)?|charge|tirinha|tira\s+de|mapa\s*(?:a seguir|abaixo)?|esquema\s*(?:a seguir|abaixo)|diagrama|ilustra[çc][ãa]o|observe\s+a\s+figura)\b/i
   );
 
   if (match) {
@@ -276,12 +372,29 @@ export function parseExamBookletText(params: {
   const { pages, answerMap, questionType } = params;
 
   const orderedLines: Array<{ pageNumber: number; text: string }> = [];
+  let reachedEssaySection = false;
   for (let p = 0; p < pages.length; p++) {
+    if (reachedEssaySection) break;
     const rawLines = (pages[p] ?? "").split(/\r?\n/);
     for (const raw of rawLines) {
-      const clean = raw.replace(/\s+/g, " ").trim();
+      const clean = raw
+        .replace(/\s+/g, " ")
+        .replace(/^R\s*A\s*S\s*C\s*U\s*N\s*H\s*O\s*/i, "")
+        .trim();
       if (!clean) continue;
-      if (/^(FUNDAÇÃO VUNESP|VUNESP|TJSP\d+|PCSP\d+|Página \d+|Caderno de Prova)/i.test(clean)) {
+      if (
+        /^(REDA[ÇC][ÃA]O\s+EM\s+L[ÍI]NGUA\s+PORTUGUESA|N[ÃA]O\s+ASSINE\s+ESTA\s+FOLHA|FOLHA\s+DE\s+RASCUNHO|PROVA\s+DISCURSIVA)/i.test(
+          clean
+        )
+      ) {
+        reachedEssaySection = true;
+        break;
+      }
+      if (
+        /^(FUNDAÇÃO VUNESP|VUNESP|\d*\s*TJSP\d+|PCSP\d+|Página \d+|Caderno de Prova|\d*\s*CONFIDENCIAL AT[ÉE] O MOMENTO|R\s*A\s*S\s*C\s*U\s*N\s*H\s*O$)/i.test(
+          clean
+        )
+      ) {
         continue;
       }
       orderedLines.push({ pageNumber: p + 1, text: clean });
@@ -357,20 +470,49 @@ export function parseExamBookletText(params: {
   const optRegexAlt = /^([A-E])[.)]\s+(.*)$/;
   const supportHeaderRe =
     /^(Leia o texto|Texto\s+(?:de apoio|base|para as quest[õo]es|\d+|[IVX]+)|Com base no texto)/i;
+  const sectionResetRe =
+    /^(?:L\s*[ÍI]\s*N\s*G\s*U\s*A\s+P\s*O\s*R\s*T\s*U\s*G\s*U\s*E\s*S\s*A|C\s*O\s*N\s*H\s*E\s*C\s*I\s*M\s*E\s*N\s*T\s*O\s*S\s+(?:E\s*M\s+D\s*I\s*R\s*E\s*I\s*T\s*O|G\s*E\s*R\s*A\s*I\s*S)|D\s*I\s*R\s*E\s*I\s*T\s*O\s+(?:P\s*E\s*N\s*A\s*L|P\s*R\s*O\s*C\s*E\s*S\s*S\s*U\s*A\s*L\s+(?:P\s*E\s*N\s*A\s*L|C\s*I\s*V\s*I\s*L)|C\s*O\s*N\s*S\s*T\s*I\s*T\s*U\s*C\s*I\s*O\s*N\s*A\s*L|A\s*D\s*M\s*I\s*N\s*I\s*S\s*T\s*R\s*A\s*T\s*I\s*V\s*O|C\s*I\s*V\s*I\s*L)|N\s*O\s*R\s*M\s*A\s*S\s+D\s*A\s+C\s*O\s*R\s*R\s*E\s*G\s*E\s*D\s*O\s*R\s*I\s*A(?:\s+G\s*E\s*R\s*A\s*L\s+D\s*A\s+J\s*U\s*S\s*T\s*I\s*[ÇC]\s*A)?|A\s*T\s*U\s*A\s*L\s*I\s*D\s*A\s*D\s*E\s*S|M\s*A\s*T\s*E\s*M\s*[ÁA]\s*T\s*I\s*C\s*A|I\s*N\s*F\s*O\s*R\s*M\s*[ÁA]\s*T\s*I\s*C\s*A|R\s*A\s*C\s*I\s*O\s*C\s*[ÍI]\s*N\s*I\s*O\s+L\s*[ÓO]\s*G\s*I\s*C\s*O)$/i;
+
+  const extractSupportRangeEnd = (text: string): number | null => {
+    const m = text.match(/quest[õo]es\s+(?:de\s+n[úu]meros?\s+)?0?(\d{1,3})\s*(?:a|at[ée]|e)\s*0?(\d{1,3})/i);
+    if (m) return Number(m[2]);
+    const single = text.match(/quest[ãa]o\s+(?:de\s+n[úu]mero\s+)?0?(\d{1,3})/i);
+    if (single) return Number(single[1]);
+    return null;
+  };
+
+  const cleanJoinedText = (parts: string[]): string =>
+    parts
+      .join(" ")
+      .replace(/([A-Za-zÀ-ÿ])-\s+([a-zà-ÿ])/g, "$1$2")
+      .replace(/\s+/g, " ")
+      .trim();
 
   const items: ParsedPdfQuestionItem[] = [];
   let activeSupportText: string | undefined;
+  let activeSupportEndNum: number | null = null;
 
   for (let i = 0; i < starts.length; i++) {
     const start = starts[i]!;
+    if (activeSupportEndNum !== null && start.num > activeSupportEndNum) {
+      activeSupportText = undefined;
+      activeSupportEndNum = null;
+    }
+
     const prevEnd = i > 0 ? starts[i - 1]!.lineIdx + 1 : 0;
     if (start.lineIdx > prevEnd) {
       const between = orderedLines
         .slice(prevEnd, start.lineIdx)
         .map((l) => l.text);
+      if (between.some((t) => sectionResetRe.test(t))) {
+        activeSupportText = undefined;
+        activeSupportEndNum = null;
+      }
       const supIdx = between.findIndex((t) => supportHeaderRe.test(t));
       if (supIdx >= 0) {
-        activeSupportText = between.slice(supIdx).join(" ").trim().slice(0, 2000);
+        const supText = cleanJoinedText(between.slice(supIdx)).slice(0, 2500);
+        activeSupportText = supText;
+        activeSupportEndNum = extractSupportRangeEnd(supText);
       }
     }
 
@@ -380,18 +522,25 @@ export function parseExamBookletText(params: {
       ...orderedLines.slice(start.lineIdx + 1, endLineIdx).map((l) => l.text),
     ];
 
-    // Separar texto de apoio que pertença às próximas questões
     const nextSupportIdx = rawBlockLines.findIndex(
       (line, idx) => idx > 0 && supportHeaderRe.test(line)
     );
-    const blockLines =
-      nextSupportIdx > 0 ? rawBlockLines.slice(0, nextSupportIdx) : rawBlockLines;
+    const nextSectionIdx = rawBlockLines.findIndex(
+      (line, idx) => idx > 0 && sectionResetRe.test(line)
+    );
+    const cutCandidates = [nextSupportIdx, nextSectionIdx].filter((x) => x > 0);
+    const cutAt = cutCandidates.length > 0 ? Math.min(...cutCandidates) : -1;
+    const blockLines = cutAt > 0 ? rawBlockLines.slice(0, cutAt) : rawBlockLines;
+
+    const currentItemSupport = activeSupportText;
+
     if (nextSupportIdx > 0) {
-      activeSupportText = rawBlockLines
-        .slice(nextSupportIdx)
-        .join(" ")
-        .trim()
-        .slice(0, 2000);
+      const supText = cleanJoinedText(rawBlockLines.slice(nextSupportIdx)).slice(0, 2500);
+      activeSupportText = supText;
+      activeSupportEndNum = extractSupportRangeEnd(supText);
+    } else if (nextSectionIdx > 0) {
+      activeSupportText = undefined;
+      activeSupportEndNum = null;
     }
 
     const keyInfo = answerMap[start.num];
@@ -399,14 +548,14 @@ export function parseExamBookletText(params: {
     const isAnnulled = keyInfo?.isAnnulled ?? false;
 
     if (questionType === "TRUE_FALSE") {
-      const statement = blockLines.join(" ").replace(/\s+/g, " ").trim();
+      const statement = cleanJoinedText(blockLines);
       const subj = inferSubjectSlugFromText(statement);
       const vis = detectMissingVisualOrTable(statement);
       items.push({
         originalNumber: start.num,
         questionType: "TRUE_FALSE",
         statement,
-        supportText: activeSupportText,
+        supportText: currentItemSupport,
         options: [
           { label: "C", content: "Certo" },
           { label: "E", content: "Errado" },
@@ -440,12 +589,12 @@ export function parseExamBookletText(params: {
       }
     }
 
-    const statement = stmtParts.join(" ").replace(/\s+/g, " ").trim();
+    const statement = cleanJoinedText(stmtParts);
     const options = (["A", "B", "C", "D", "E"] as const)
       .filter((lbl) => optionsMap[lbl] !== undefined)
       .map((lbl) => ({
         label: lbl,
-        content: optionsMap[lbl]!.join(" ").replace(/\s+/g, " ").trim(),
+        content: cleanJoinedText(optionsMap[lbl]!),
       }));
 
     const subj = inferSubjectSlugFromText(statement);
@@ -457,7 +606,7 @@ export function parseExamBookletText(params: {
       originalNumber: start.num,
       questionType: "MULTIPLE_CHOICE",
       statement,
-      supportText: activeSupportText,
+      supportText: currentItemSupport,
       options,
       officialAnswer,
       isAnnulled,

@@ -1,7 +1,10 @@
+import fs from "node:fs";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   CLASSIFICATION_PENDING_SLUG,
   detectMissingVisualOrTable,
+  extractPdfPages,
   inferSubjectSlugFromText,
   parseAnswerKeyText,
   parseExamBookletText,
@@ -101,5 +104,98 @@ describe("Parser Serverless de PDFs Oficiais (Vunesp / FGV / Cebraspe)", () => {
     expect(map[1]?.answerValue).toBe("B");
     expect(map[4]?.answerValue).toBe("D");
     expect(map[5]?.answerValue).toBe("A");
+  });
+
+  it("interrompe a leitura na seção de Redação/Rascunho e limita texto de apoio ao intervalo declarado", () => {
+    const pages = [
+      `
+      LÍNGUA PORTUGUESA
+      Leia o texto para responder às questões de números 01 e 02.
+      Texto base sobre interpretação administrativa.
+      01. Primeira questão referente ao texto base de língua portuguesa.
+      (A) Alternativa A1.
+      (B) Alternativa B1.
+      (C) Alternativa C1.
+      (D) Alternativa D1.
+      (E) Alternativa E1.
+      02. Segunda questão referente ao texto base de língua portuguesa.
+      (A) Alternativa A2.
+      (B) Alternativa B2.
+      (C) Alternativa C2.
+      (D) Alternativa D2.
+      (E) Alternativa E2.
+      INFORMÁTICA
+      03. Considere a planilha elaborada no Microsoft Excel 365 apresentada a seguir.
+      (A) Alternativa A3.
+      (B) Alternativa B3.
+      (C) Alternativa C3.
+      (D) Alternativa D3.
+      (E) Alternativa E3.
+      `,
+      `
+      REDAÇÃO EM LÍNGUA PORTUGUESA
+      FOLHA DE RASCUNHO
+      04
+      05
+      `,
+    ];
+
+    const items = parseExamBookletText({
+      pages,
+      answerMap: {
+        1: { answerValue: "A", isAnnulled: false },
+        2: { answerValue: "B", isAnnulled: false },
+        3: { answerValue: "C", isAnnulled: false },
+      },
+      questionType: "MULTIPLE_CHOICE",
+    });
+
+    expect(items).toHaveLength(3);
+    expect(items[0]?.supportText).toContain("Texto base sobre interpretação");
+    expect(items[1]?.supportText).toContain("Texto base sobre interpretação");
+    expect(items[2]?.supportText).toBeUndefined();
+    expect(items[2]?.hasMissingVisualOrTable).toBe(true);
+    expect(items[2]?.visualWarning).toContain("planilha");
+  });
+
+  it("extrai todas as 70/70 questões do caderno real TJSP 2025 (duas colunas) em ordem exata com alternativas A–E", async () => {
+    const provaPath = path.resolve(
+      process.cwd(),
+      "acervo/tjsp_2025/tjsp2503_prova_uploaded.pdf"
+    );
+    const gabaritoPath = path.resolve(
+      process.cwd(),
+      "acervo/tjsp_2025/tjsp2503_gabarito_uploaded.pdf"
+    );
+
+    if (!fs.existsSync(provaPath) || !fs.existsSync(gabaritoPath)) {
+      return;
+    }
+
+    const provaPages = await extractPdfPages(fs.readFileSync(provaPath));
+    const gabaritoPages = await extractPdfPages(fs.readFileSync(gabaritoPath));
+    const answerMap = parseAnswerKeyText(
+      gabaritoPages.join("\n"),
+      "MULTIPLE_CHOICE",
+      "Versão 1"
+    );
+
+    expect(Object.keys(answerMap)).toHaveLength(70);
+
+    const items = parseExamBookletText({
+      pages: provaPages,
+      answerMap,
+      questionType: "MULTIPLE_CHOICE",
+    });
+
+    expect(items).toHaveLength(70);
+    expect(items.map((item) => item.originalNumber)).toEqual(
+      Array.from({ length: 70 }, (_, idx) => idx + 1)
+    );
+    for (const item of items) {
+      expect(item.options).toHaveLength(5);
+      expect(item.options.map((opt) => opt.label)).toEqual(["A", "B", "C", "D", "E"]);
+      expect(item.officialAnswer).toMatch(/^[A-E]$/);
+    }
   });
 });

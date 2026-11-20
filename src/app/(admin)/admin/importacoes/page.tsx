@@ -1,6 +1,7 @@
 import { ShieldAlert } from "lucide-react";
 import { requireAdminAuth } from "@/lib/auth/session";
 import { isDatabaseConfigured, prisma } from "@/lib/db/prisma";
+import { resolveExpectedQuestionCount } from "@/features/imports/pipeline";
 import {
   PdfImportStudio,
   type AdminEditionOption,
@@ -28,7 +29,12 @@ export default async function AdminImportsPage() {
         }),
         prisma.importJob.findMany({
           include: {
-            examEdition: true,
+            examEdition: {
+              include: {
+                position: { include: { studyTrack: { select: { code: true } } } },
+                ruleset: { select: { passingRulesJson: true } },
+              },
+            },
             examForm: true,
             examPdfDocument: true,
             answerKeyDocument: true,
@@ -65,6 +71,12 @@ export default async function AdminImportsPage() {
     id: job.id,
     status: job.status,
     totalDetected: job.totalDetected,
+    expectedQuestionCount: resolveExpectedQuestionCount({
+      formExpectedCount: job.examForm.expectedQuestionCount,
+      editionExpectedCount: job.examEdition.expectedQuestionCount,
+      rulesetPassingRules: job.examEdition.ruleset.passingRulesJson,
+      trackCode: job.examEdition.position.studyTrack.code,
+    }),
     totalStructured: job.totalStructured,
     totalValidated: job.totalValidated,
     totalPublished: job.totalPublished,

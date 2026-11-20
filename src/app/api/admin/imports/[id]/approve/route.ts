@@ -3,6 +3,7 @@ import { requireApiAdmin } from "@/lib/auth/api-guard";
 import { isDatabaseConfigured, prisma } from "@/lib/db/prisma";
 import {
   evaluateItemPublishEligibility,
+  resolveExpectedQuestionCount,
   type ImportItemReviewState,
 } from "@/features/imports/pipeline";
 import { logger } from "@/lib/utils/logger";
@@ -48,6 +49,13 @@ export async function POST(
   const job = await prisma.importJob.findUnique({
     where: { id },
     include: {
+      examEdition: {
+        include: {
+          position: { include: { studyTrack: { select: { code: true } } } },
+          ruleset: { select: { passingRulesJson: true } },
+        },
+      },
+      examForm: true,
       examPdfDocument: true,
       answerKeyDocument: true,
       items: { orderBy: { originalNumber: "asc" } },
@@ -246,14 +254,21 @@ export async function POST(
       publishedCount += 1;
     }
 
-    const allResolved = blockedItems.length === 0;
+    const expectedCount = resolveExpectedQuestionCount({
+      formExpectedCount: job.examForm.expectedQuestionCount,
+      editionExpectedCount: job.examEdition.expectedQuestionCount,
+      rulesetPassingRules: job.examEdition.ruleset.passingRulesJson,
+      trackCode: job.examEdition.position.studyTrack.code,
+    });
+    const isCompleteExtraction =
+      job.totalDetected >= expectedCount && blockedItems.length === 0;
     const updated = await tx.importJob.update({
       where: { id: job.id },
       data: {
-        status: allResolved ? "PUBLISHED" : "AWAITING_REVIEW",
-        currentStage: allResolved ? "PUBLISHED" : "AWAITING_REVIEW",
+        status: isCompleteExtraction ? "PUBLISHED" : "AWAITING_REVIEW",
+        currentStage: isCompleteExtraction ? "PUBLISHED" : "AWAITING_REVIEW",
         totalPublished: publishedCount,
-        finishedAt: allResolved ? publishedAt : null,
+        finishedAt: isCompleteExtraction ? publishedAt : null,
       },
     });
 

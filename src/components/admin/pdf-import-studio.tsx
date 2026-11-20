@@ -64,6 +64,7 @@ export type ImportJobSummary = {
   id: string;
   status: string;
   totalDetected: number;
+  expectedQuestionCount: number;
   totalStructured: number;
   totalValidated: number;
   totalPublished: number;
@@ -94,6 +95,9 @@ function mapRawJob(j: Record<string, unknown>): ImportJobSummary {
     id: String(j.id),
     status: String(j.status),
     totalDetected: Number(j.totalDetected ?? 0),
+    expectedQuestionCount: Number(
+      form.expectedQuestionCount ?? ed.expectedQuestionCount ?? 100
+    ),
     totalStructured: Number(j.totalStructured ?? 0),
     totalValidated: Number(j.totalValidated ?? 0),
     totalPublished: Number(j.totalPublished ?? 0),
@@ -463,6 +467,20 @@ export function PdfImportStudio({
         i.structuredPayloadJson?.reviewState === "VERIFIED"
     ).length ?? 0;
 
+  const missingNumbers = useMemo(() => {
+    if (!activeJob || !activeJob.expectedQuestionCount) return [];
+    const present = new Set(activeJob.items.map((i) => i.originalNumber));
+    const missing: number[] = [];
+    for (let n = 1; n <= activeJob.expectedQuestionCount; n++) {
+      if (!present.has(n)) missing.push(n);
+    }
+    return missing;
+  }, [activeJob]);
+
+  const isExtractionIncomplete =
+    Boolean(activeJob) &&
+    activeJob!.totalDetected < activeJob!.expectedQuestionCount;
+
   const activePdfUrl = useMemo(() => {
     if (!activeJob) return null;
     if (pdfTab === "EXAM" && activeJob.examDocHasStoredFile) {
@@ -709,6 +727,31 @@ export function PdfImportStudio({
               )}
             </button>
           </div>
+
+          {/* Alerta de Extração Incompleta */}
+          {isExtractionIncomplete && (
+            <div className="p-4 rounded-lg border-2 border-semantic-error/50 bg-semantic-error-bg/60 text-xs flex items-start gap-2.5">
+              <AlertTriangle className="w-4 h-4 text-semantic-error shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <p className="font-semibold text-foreground">
+                  Extração incompleta detectada: {activeJob.totalDetected} de{" "}
+                  {activeJob.expectedQuestionCount} questões esperadas (
+                  {Math.round(
+                    (activeJob.totalDetected / activeJob.expectedQuestionCount) *
+                      100
+                  )}
+                  %).
+                </p>
+                <p className="text-muted">
+                  Questões ausentes ({missingNumbers.length}):{" "}
+                  {missingNumbers.slice(0, 15).map((n) => `#${n}`).join(", ")}
+                  {missingNumbers.length > 15 ? "…" : ""}. Este caderno{" "}
+                  <strong>não será marcado como completo</strong> até que todas
+                  as questões sejam extraídas e conferidas.
+                </p>
+              </div>
+            </div>
+          )}
 
           {/* Conferência Independente dos Documentos e Gabarito Definitivo */}
           <div
