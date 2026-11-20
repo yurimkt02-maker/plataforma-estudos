@@ -138,6 +138,47 @@ export function parseQuestionFiltersResilient(
   };
 }
 
+/**
+ * Serializa apenas filtros ativos/não-padrão em URLSearchParams (isomórfico Server + Client).
+ */
+export function buildQuestionFilterSearchParams(
+  state: Partial<QuestionFilterInput>,
+  overridePage?: number
+): URLSearchParams {
+  const sp = new URLSearchParams();
+  if (state.trackCode) sp.set("trackCode", state.trackCode);
+  if (state.disciplineId) sp.set("disciplineId", state.disciplineId);
+  if (state.topicId) sp.set("topicId", state.topicId);
+  if (state.examBoardId) sp.set("examBoardId", state.examBoardId);
+  if (state.positionId) sp.set("positionId", state.positionId);
+  if (state.institutionId) sp.set("institutionId", state.institutionId);
+  if (state.year) sp.set("year", String(state.year));
+  if (state.questionType) sp.set("questionType", state.questionType);
+  if (state.difficulty) sp.set("difficulty", state.difficulty);
+  if (state.resolutionFilter && state.resolutionFilter !== "ALL") {
+    sp.set("resolutionFilter", state.resolutionFilter);
+  }
+  if (state.accuracyFilter && state.accuracyFilter !== "ALL") {
+    sp.set("accuracyFilter", state.accuracyFilter);
+  }
+  if (state.onlyBookmarked) sp.set("onlyBookmarked", "true");
+  if (state.onlyVerifiedExplanations) {
+    sp.set("onlyVerifiedExplanations", "true");
+  }
+  if (state.includeAnnulled) sp.set("includeAnnulled", "true");
+  if (state.query && state.query.trim().length > 0) {
+    sp.set("query", state.query.trim());
+  }
+  if (state.sortBy && state.sortBy !== "ORIGINAL_NUMBER") {
+    sp.set("sortBy", state.sortBy);
+  }
+  const page = overridePage ?? state.page;
+  if (page && page > 1) {
+    sp.set("page", String(page));
+  }
+  return sp;
+}
+
 export const submitAnswerSchema = z.object({
   questionId: z.string().uuid("ID da questão inválido."),
   examQuestionInstanceId: z

@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildQuestionFilterSearchParams,
   parseQuestionFiltersResilient,
   questionFilterSchema,
 } from "@/lib/validations/schemas";
 import { buildQuestionSearchWhereClause } from "@/features/question-bank/service";
-import { buildQuestionFilterSearchParams } from "@/components/questions/question-bank-filters";
 
 const UUID_DISC = "fdfe9b2f-4858-4b69-87d2-fae6ce43a23d";
 const UUID_TOPIC_1 = "234ad262-6fbb-46b0-a23e-05d05e8bb491";
