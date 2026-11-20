@@ -219,6 +219,49 @@ export function validateExtractedQuestionItem(
 }
 
 /**
+ * Resolve a quantidade oficial esperada de questões priorizando:
+ * 1) ExamForm.expectedQuestionCount (ex.: caderno específico)
+ * 2) ExamEdition.expectedQuestionCount (ex.: TJSP 2025 = 70 vs TJSP 2024 = 100)
+ * 3) ExamRuleset.passingRulesJson.totalQuestions
+ * 4) Fallback por carreira apenas se nenhum valor específico estiver configurado.
+ */
+export function resolveExpectedQuestionCount(params: {
+  formExpectedCount?: number | null;
+  editionExpectedCount?: number | null;
+  rulesetPassingRules?: unknown;
+  trackCode?: string | null;
+}): number {
+  if (
+    typeof params.formExpectedCount === "number" &&
+    params.formExpectedCount > 0
+  ) {
+    return params.formExpectedCount;
+  }
+  if (
+    typeof params.editionExpectedCount === "number" &&
+    params.editionExpectedCount > 0
+  ) {
+    return params.editionExpectedCount;
+  }
+  if (
+    params.rulesetPassingRules &&
+    typeof params.rulesetPassingRules === "object" &&
+    !Array.isArray(params.rulesetPassingRules)
+  ) {
+    const total = (params.rulesetPassingRules as Record<string, unknown>)
+      .totalQuestions;
+    if (typeof total === "number" && total > 0) {
+      return total;
+    }
+  }
+  const track = (params.trackCode ?? "").toUpperCase();
+  if (track === "PRF") return 120;
+  if (track === "TJSP") return 100;
+  if (track === "PCSP" || track === "OAB") return 80;
+  return 100;
+}
+
+/**
  * Executa auditoria de completude de um caderno de prova extraído (números faltantes,
  * duplicidades de numeração, itens sem gabarito e percentual de extração).
  */

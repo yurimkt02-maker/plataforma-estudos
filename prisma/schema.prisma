@@ -265,9 +265,10 @@ model ExamEdition {
   title             String
   year              Int
   examDate          DateTime?
-  phase             String            @default("1ª Fase - Prova Objetiva")
-  editionCode       String            @unique
-  officialNoticeUrl String?
+  phase                 String            @default("1ª Fase - Prova Objetiva")
+  editionCode           String            @unique
+  expectedQuestionCount Int?
+  officialNoticeUrl     String?
   status            ExamEditionStatus @default(ACTIVE)
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
@@ -290,8 +291,9 @@ model ExamForm {
   examEditionId String   @db.Uuid
   versionLabel  String
   colorOrType   String?
-  language      String   @default("pt-BR")
-  notes         String?
+  language              String   @default("pt-BR")
+  expectedQuestionCount Int?
+  notes                 String?
   isDefault     Boolean  @default(false)
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt

@@ -1,4 +1,5 @@
 import { isDatabaseConfigured, prisma } from "@/lib/db/prisma";
+import { resolveExpectedQuestionCount } from "@/features/imports/pipeline";
 
 export type ExamCompletenessSummary = {
   editionId: string;
@@ -218,25 +219,14 @@ export async function getAdminInventoryMetrics(): Promise<AdminInventoryMetrics>
     }),
   ]);
 
-  const expectedByTrack: Record<string, number> = {
-    TJSP: 100,
-    PCSP: 80,
-    PRF: 120,
-    OAB: 80,
-  };
-
   const byExam: ExamCompletenessSummary[] = editions.map((ed) => {
-    const rulesObj =
-      ed.ruleset.passingRulesJson &&
-      typeof ed.ruleset.passingRulesJson === "object" &&
-      !Array.isArray(ed.ruleset.passingRulesJson)
-        ? (ed.ruleset.passingRulesJson as Record<string, unknown>)
-        : {};
-    const rulesTotal =
-      typeof rulesObj.totalQuestions === "number" ? rulesObj.totalQuestions : null;
-    const expectedQuestions =
-      rulesTotal ?? expectedByTrack[ed.position.studyTrack.code] ?? 100;
     const defaultForm = ed.examForms.find((f) => f.isDefault) ?? ed.examForms[0];
+    const expectedQuestions = resolveExpectedQuestionCount({
+      formExpectedCount: defaultForm?.expectedQuestionCount,
+      editionExpectedCount: ed.expectedQuestionCount,
+      rulesetPassingRules: ed.ruleset.passingRulesJson,
+      trackCode: ed.position.studyTrack.code,
+    });
     const instances = defaultForm?.questionInstances ?? [];
 
     const activeInstances = instances.filter(

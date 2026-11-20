@@ -4,6 +4,7 @@ import { requireApiAdmin } from "@/lib/auth/api-guard";
 import { isDatabaseConfigured, prisma } from "@/lib/db/prisma";
 import {
   auditExamCompleteness,
+  resolveExpectedQuestionCount,
   validateExtractedQuestionItem,
   type ImportItemReviewState,
 } from "@/features/imports/pipeline";
@@ -118,6 +119,7 @@ export async function POST(request: NextRequest) {
       include: {
         position: { include: { studyTrack: true } },
         examBoard: true,
+        ruleset: true,
         examForms: true,
       },
     });
@@ -160,12 +162,12 @@ export async function POST(request: NextRequest) {
         idempotentReplay: true,
         job: existingJob,
         completeness: auditExamCompleteness({
-          expectedCount:
-            examEdition.position.studyTrack.code === "PRF"
-              ? 120
-              : examEdition.position.studyTrack.code === "TJSP"
-                ? 100
-                : 80,
+          expectedCount: resolveExpectedQuestionCount({
+            formExpectedCount: examForm.expectedQuestionCount,
+            editionExpectedCount: examEdition.expectedQuestionCount,
+            rulesetPassingRules: examEdition.ruleset.passingRulesJson,
+            trackCode: examEdition.position.studyTrack.code,
+          }),
           items: existingJob.items.map((it) => ({
             originalNumber: it.originalNumber,
             officialAnswer: it.detectedAnswerKey,
@@ -214,12 +216,12 @@ export async function POST(request: NextRequest) {
     const examPdfOfficialUrl = examPdfOfficialUrlInput || defaultOfficialUrl;
     const answerKeyOfficialUrl = answerKeyOfficialUrlInput || defaultOfficialUrl;
 
-    const expectedCount =
-      examEdition.position.studyTrack.code === "PRF"
-        ? 120
-        : examEdition.position.studyTrack.code === "TJSP"
-          ? 100
-          : 80;
+    const expectedCount = resolveExpectedQuestionCount({
+      formExpectedCount: examForm.expectedQuestionCount,
+      editionExpectedCount: examEdition.expectedQuestionCount,
+      rulesetPassingRules: examEdition.ruleset.passingRulesJson,
+      trackCode: examEdition.position.studyTrack.code,
+    });
 
     const completeness = auditExamCompleteness({
       expectedCount,

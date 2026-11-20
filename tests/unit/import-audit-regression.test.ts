@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   auditExamCompleteness,
   detectAnswerKeyDivergences,
+  resolveExpectedQuestionCount,
   validateExtractedQuestionItem,
   validateMultiVersionOptionMapping,
 } from "@/features/imports/pipeline";
@@ -139,5 +140,27 @@ describe("Regressão de Auditoria de Gabaritos e Múltiplas Versões de Caderno"
     expect(complete.isComplete).toBe(true);
     expect(complete.completenessPercent).toBe(100);
     expect(complete.missingNumbers).toHaveLength(0);
+  });
+
+  it("resolve quantidade esperada por edição/caderno (TJSP 2025 = 70 vs TJSP 2024 = 100)", () => {
+    const tjsp2025 = resolveExpectedQuestionCount({
+      editionExpectedCount: 70,
+      trackCode: "TJSP",
+    });
+    expect(tjsp2025).toBe(70);
+
+    const tjsp2024 = resolveExpectedQuestionCount({
+      editionExpectedCount: 100,
+      trackCode: "TJSP",
+    });
+    expect(tjsp2024).toBe(100);
+
+    // Override explícito por ExamForm tem precedência sobre ExamEdition
+    const formOverride = resolveExpectedQuestionCount({
+      formExpectedCount: 70,
+      editionExpectedCount: 100,
+      trackCode: "TJSP",
+    });
+    expect(formOverride).toBe(70);
   });
 });

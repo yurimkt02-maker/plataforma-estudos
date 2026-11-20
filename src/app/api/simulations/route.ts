@@ -3,6 +3,7 @@ import { requireApiAuth } from "@/lib/auth/api-guard";
 import { isDatabaseConfigured, prisma } from "@/lib/db/prisma";
 import { createSimulationSchema } from "@/lib/validations/schemas";
 import { OFFICIAL_RULESETS } from "@/features/scoring/engine";
+import { resolveExpectedQuestionCount } from "@/features/imports/pipeline";
 import { logger } from "@/lib/utils/logger";
 
 export const runtime = "nodejs";
@@ -52,6 +53,37 @@ export async function POST(request: NextRequest) {
       where: { code: trackCode.toUpperCase() },
     });
 
+    // Para modo PAST_EXAM, respeitar a quantidade oficial configurada na edição/caderno (ex.: TJSP 2025 = 70)
+    let effectiveTotalQuestions = totalQuestions;
+    if (mode === "PAST_EXAM" && (examFormId || examEditionId)) {
+      const targetEdition = examFormId
+        ? await prisma.examForm.findUnique({
+            where: { id: examFormId },
+            include: { examEdition: { include: { ruleset: true } } },
+          })
+        : examEditionId
+          ? await prisma.examEdition.findUnique({
+              where: { id: examEditionId },
+              include: { ruleset: true },
+            })
+          : null;
+
+      if (targetEdition) {
+        const isForm = "examEdition" in targetEdition;
+        const resolved = resolveExpectedQuestionCount({
+          formExpectedCount: isForm ? targetEdition.expectedQuestionCount : null,
+          editionExpectedCount: isForm
+            ? targetEdition.examEdition.expectedQuestionCount
+            : targetEdition.expectedQuestionCount,
+          rulesetPassingRules: isForm
+            ? targetEdition.examEdition.ruleset.passingRulesJson
+            : targetEdition.ruleset.passingRulesJson,
+          trackCode,
+        });
+        effectiveTotalQuestions = Math.min(totalQuestions, resolved);
+      }
+    }
+
     const rulesetSnapshot =
       OFFICIAL_RULESETS[rulesetCode] ?? OFFICIAL_RULESETS.VUNESP_STANDARD_5!;
 
@@ -100,7 +132,7 @@ export async function POST(request: NextRequest) {
         mode === "PAST_EXAM"
           ? [{ originalNumber: "asc" }]
           : [{ examForm: { isDefault: "desc" } }, { originalNumber: "asc" }],
-      take: totalQuestions * 3,
+      take: effectiveTotalQuestions * 3,
     });
 
     // Deduplica por questionId para jamais repetir a mesma questão que aparece em múltiplas versões de caderno
@@ -110,7 +142,7 @@ export async function POST(request: NextRequest) {
       if (!seenQuestionIds.has(inst.questionId)) {
         seenQuestionIds.add(inst.questionId);
         instances.push(inst);
-        if (instances.length >= totalQuestions) break;
+        if (instances.length >= effectiveTotalQuestions) break;
       }
     }
 
