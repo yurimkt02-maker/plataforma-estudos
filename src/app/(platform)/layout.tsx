@@ -1,6 +1,6 @@
 import { Suspense } from "react";
 import { requireServerAuth } from "@/lib/auth/session";
-import { isDatabaseConfigured } from "@/lib/db/prisma";
+import { getQuickResumeTarget } from "@/features/question-bank/service";
 import { PlatformShell } from "@/components/layout/platform-shell";
 
 export default async function PlatformLayout({
@@ -9,7 +9,10 @@ export default async function PlatformLayout({
   children: React.ReactNode;
 }) {
   const user = await requireServerAuth();
-  const dbConnected = isDatabaseConfigured();
+  const resumeTarget = await getQuickResumeTarget({
+    userId: user.id,
+    activeTrackCode: user.activeTrackCode,
+  });
 
   return (
     <Suspense
@@ -19,7 +22,7 @@ export default async function PlatformLayout({
         </div>
       }
     >
-      <PlatformShell user={user} dbConnected={dbConnected}>
+      <PlatformShell user={user} resumeTarget={resumeTarget}>
         {children}
       </PlatformShell>
     </Suspense>

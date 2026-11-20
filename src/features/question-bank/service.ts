@@ -15,6 +15,15 @@ import {
 import type { QuestionFilterInput } from "@/lib/validations/schemas";
 import { logger } from "@/lib/utils/logger";
 
+export type ResumeTarget = {
+  kind: "SIMULATION_IN_PROGRESS" | "LAST_QUESTION" | "NEW_SESSION";
+  href: string;
+  label: string;
+  shortLabel: string;
+  contextTitle: string;
+  contextSubtitle: string;
+};
+
 export type DashboardOverviewData = {
   dbConnected: boolean;
   activeTrackCode: string;
@@ -24,9 +33,20 @@ export type DashboardOverviewData = {
     targetRole: string;
     description: string | null;
   }>;
+  trackProgress: Array<{
+    code: string;
+    name: string;
+    targetRole: string;
+    publishedCount: number;
+    attemptedCount: number;
+  }>;
   metrics: PerformanceMetricsSummary;
+  dailyGoalQuestions: number;
+  todayAnsweredCount: number;
+  errorNotebookCount: number;
   unresolvedQuestionsCount: number;
   pendingReviewsCount: number;
+  resumeTarget: ResumeTarget;
   subjectBreakdown: Array<{
     subjectId: string;
     subjectName: string;
@@ -42,6 +62,17 @@ export type DashboardOverviewData = {
     selectedAnswer: string | null;
     isCorrect: boolean;
     answeredAt: string;
+  }>;
+  recentSimulations: Array<{
+    id: string;
+    simulationId: string;
+    title: string;
+    status: string;
+    netScore: number;
+    maxScore: number;
+    percentageScore: number;
+    startedAt: string;
+    finishedAt: string | null;
   }>;
   latestSimulation: {
     id: string;
@@ -74,6 +105,77 @@ const EMPTY_METRICS: PerformanceMetricsSummary = {
  * Jamais inventa estatísticas fictícias: quando não há histórico ou o banco aguarda credenciais,
  * retorna estados vazios autênticos e transparentes.
  */
+export async function getQuickResumeTarget(params: {
+  userId: string;
+  activeTrackCode: string;
+}): Promise<ResumeTarget> {
+  const trackCode = params.activeTrackCode.toUpperCase() || "TJSP";
+  const fallback: ResumeTarget = {
+    kind: "NEW_SESSION",
+    href: `/questoes?track=${trackCode}`,
+    label: "Iniciar sessão de questões",
+    shortLabel: "Iniciar estudo",
+    contextTitle: `Acervo oficial — ${trackCode}`,
+    contextSubtitle: "Resolva questões reais verificadas da trilha selecionada",
+  };
+
+  if (!isDatabaseConfigured()) return fallback;
+
+  try {
+    const [inProgressSim, latestAttempt] = await Promise.all([
+      prisma.simulationAttempt.findFirst({
+        where: { userId: params.userId, status: "IN_PROGRESS" },
+        include: { simulation: true },
+        orderBy: { startedAt: "desc" },
+      }),
+      prisma.questionAttempt.findFirst({
+        where: { userId: params.userId },
+        include: {
+          question: {
+            include: { subjects: { include: { subject: true } } },
+          },
+          examQuestionInstance: {
+            include: {
+              examForm: { include: { examEdition: true } },
+            },
+          },
+        },
+        orderBy: { answeredAt: "desc" },
+      }),
+    ]);
+
+    if (inProgressSim) {
+      return {
+        kind: "SIMULATION_IN_PROGRESS",
+        href: `/simulados/${inProgressSim.simulationId}?attemptId=${inProgressSim.id}`,
+        label: "Retomar simulado em andamento",
+        shortLabel: "Retomar simulado",
+        contextTitle: inProgressSim.simulation.title,
+        contextSubtitle: "Simulado em andamento salvo automaticamente",
+      };
+    }
+
+    if (latestAttempt) {
+      const subj =
+        latestAttempt.question.subjects.find((s) => s.isPrimary)?.subject ??
+        latestAttempt.question.subjects[0]?.subject;
+      return {
+        kind: "LAST_QUESTION",
+        href: `/questoes/${latestAttempt.questionId}`,
+        label: "Continuar de onde parei",
+        shortLabel: "Retomar estudo",
+        contextTitle:
+          latestAttempt.examQuestionInstance.examForm.examEdition.title,
+        contextSubtitle: `Questão #${latestAttempt.examQuestionInstance.originalNumber}${subj ? ` · ${subj.name}` : ""}`,
+      };
+    }
+
+    return fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 export async function getDashboardOverview(params: {
   userId: string;
   trackCode?: string;
@@ -85,28 +187,55 @@ export async function getDashboardOverview(params: {
     targetRole: t.targetRole,
     description: t.description,
   }));
+  const defaultResume: ResumeTarget = {
+    kind: "NEW_SESSION",
+    href: `/questoes?track=${activeTrackCode}`,
+    label: "Iniciar sessão de questões",
+    shortLabel: "Iniciar estudo",
+    contextTitle: `Acervo oficial — ${activeTrackCode}`,
+    contextSubtitle: "Resolva questões reais verificadas da trilha selecionada",
+  };
 
   if (!isDatabaseConfigured()) {
     return {
       dbConnected: false,
       activeTrackCode,
       tracks: defaultTracks,
+      trackProgress: defaultTracks.map((t) => ({
+        code: t.code,
+        name: t.name,
+        targetRole: t.targetRole,
+        publishedCount: 0,
+        attemptedCount: 0,
+      })),
       metrics: EMPTY_METRICS,
+      dailyGoalQuestions: 30,
+      todayAnsweredCount: 0,
+      errorNotebookCount: 0,
       unresolvedQuestionsCount: 0,
       pendingReviewsCount: 0,
+      resumeTarget: defaultResume,
       subjectBreakdown: [],
       recentAttempts: [],
+      recentSimulations: [],
       latestSimulation: null,
     };
   }
 
   try {
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+
     const [
       dbTracks,
       attempts,
       totalPublishedQuestions,
       pendingReviewsCount,
-      latestSimAttempt,
+      recentSimAttempts,
+      userSettings,
+      todayAnsweredCount,
+      allUserAttemptsLight,
+      publishedInstancesByTrack,
     ] = await Promise.all([
       prisma.studyTrack.findMany({
         where: { isActive: true },
@@ -182,12 +311,67 @@ export async function getDashboardOverview(params: {
           nextReviewAt: { lte: new Date() },
         },
       }),
-      prisma.simulationAttempt.findFirst({
+      prisma.simulationAttempt.findMany({
         where: { userId: params.userId },
         include: { simulation: true },
         orderBy: { startedAt: "desc" },
+        take: 4,
+      }),
+      prisma.userSettings.findUnique({
+        where: { userId: params.userId },
+        select: { dailyGoalQuestions: true },
+      }),
+      prisma.questionAttempt.count({
+        where: {
+          userId: params.userId,
+          answeredAt: { gte: startOfToday },
+        },
+      }),
+      prisma.questionAttempt.findMany({
+        where: { userId: params.userId },
+        select: {
+          questionId: true,
+          isCorrect: true,
+          examQuestionInstance: {
+            select: {
+              examForm: {
+                select: {
+                  examEdition: {
+                    select: {
+                      position: {
+                        select: { studyTrack: { select: { code: true } } },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        orderBy: { answeredAt: "desc" },
+      }),
+      prisma.examQuestionInstance.findMany({
+        where: { question: { status: "PUBLISHED" } },
+        select: {
+          questionId: true,
+          examForm: {
+            select: {
+              examEdition: {
+                select: {
+                  position: {
+                    select: { studyTrack: { select: { code: true } } },
+                  },
+                },
+              },
+            },
+          },
+        },
       }),
     ]);
+
+    const latestSimAttempt = recentSimAttempts[0] ?? null;
+    const inProgressSim =
+      recentSimAttempts.find((s) => s.status === "IN_PROGRESS") ?? null;
 
     const analyticsRecords = attempts.map((a) => {
       const primarySubj =
@@ -253,26 +437,114 @@ export async function getDashboardOverview(params: {
       };
     });
 
+    const resolvedTracks =
+      dbTracks.length > 0
+        ? dbTracks.map((t) => ({
+            code: t.code,
+            name: t.name,
+            targetRole: t.targetRole,
+            description: t.description,
+          }))
+        : defaultTracks;
+
+    // Progresso real por concurso (questões publicadas únicas vs respondidas únicas)
+    const publishedSetByTrack = new Map<string, Set<string>>();
+    for (const inst of publishedInstancesByTrack) {
+      const code = inst.examForm.examEdition.position.studyTrack.code;
+      let set = publishedSetByTrack.get(code);
+      if (!set) {
+        set = new Set<string>();
+        publishedSetByTrack.set(code, set);
+      }
+      set.add(inst.questionId);
+    }
+
+    const attemptedSetByTrack = new Map<string, Set<string>>();
+    const lastResultByQuestion = new Map<string, boolean>();
+    for (const att of allUserAttemptsLight) {
+      const code =
+        att.examQuestionInstance.examForm.examEdition.position.studyTrack.code;
+      let set = attemptedSetByTrack.get(code);
+      if (!set) {
+        set = new Set<string>();
+        attemptedSetByTrack.set(code, set);
+      }
+      set.add(att.questionId);
+      // Como está ordenado por answeredAt desc, o primeiro registro é a última tentativa real
+      if (!lastResultByQuestion.has(att.questionId)) {
+        lastResultByQuestion.set(att.questionId, att.isCorrect);
+      }
+    }
+
+    let errorNotebookCount = 0;
+    for (const isLatestCorrect of lastResultByQuestion.values()) {
+      if (!isLatestCorrect) errorNotebookCount += 1;
+    }
+
+    const trackProgress = resolvedTracks.map((t) => ({
+      code: t.code,
+      name: t.name,
+      targetRole: t.targetRole,
+      publishedCount: publishedSetByTrack.get(t.code)?.size ?? 0,
+      attemptedCount: attemptedSetByTrack.get(t.code)?.size ?? 0,
+    }));
+
+    // Alvo honesto de retomada (nunca promete sessão inexistente)
+    let resumeTarget: ResumeTarget = defaultResume;
+    if (inProgressSim) {
+      resumeTarget = {
+        kind: "SIMULATION_IN_PROGRESS",
+        href: `/simulados/${inProgressSim.simulationId}?attemptId=${inProgressSim.id}`,
+        label: "Retomar simulado em andamento",
+        shortLabel: "Retomar simulado",
+        contextTitle: inProgressSim.simulation.title,
+        contextSubtitle: "Simulado em andamento salvo automaticamente",
+      };
+    } else if (attempts[0]) {
+      const last = attempts[0];
+      const primarySubj =
+        last.question.subjects.find((s) => s.isPrimary)?.subject ??
+        last.question.subjects[0]?.subject;
+      resumeTarget = {
+        kind: "LAST_QUESTION",
+        href: `/questoes/${last.questionId}`,
+        label: "Continuar de onde parei",
+        shortLabel: "Retomar estudo",
+        contextTitle: last.examQuestionInstance.examForm.examEdition.title,
+        contextSubtitle: `Questão #${last.examQuestionInstance.originalNumber}${primarySubj ? ` · ${primarySubj.name}` : ""}`,
+      };
+    }
+
+    const recentSimulations = recentSimAttempts.map((s) => ({
+      id: s.id,
+      simulationId: s.simulationId,
+      title: s.simulation.title,
+      status: s.status,
+      netScore: Number(s.netScore),
+      maxScore: Number(s.maxScore),
+      percentageScore: Number(s.percentageScore),
+      startedAt: s.startedAt.toISOString(),
+      finishedAt: s.finishedAt?.toISOString() ?? null,
+    }));
+
     return {
       dbConnected: true,
       activeTrackCode,
-      tracks:
-        dbTracks.length > 0
-          ? dbTracks.map((t) => ({
-              code: t.code,
-              name: t.name,
-              targetRole: t.targetRole,
-              description: t.description,
-            }))
-          : defaultTracks,
+      tracks: resolvedTracks,
+      trackProgress,
       metrics,
+      dailyGoalQuestions: userSettings?.dailyGoalQuestions ?? 30,
+      todayAnsweredCount,
+      errorNotebookCount,
       unresolvedQuestionsCount: Math.max(
         0,
         totalPublishedQuestions - metrics.uniqueQuestionsAttempted
       ),
       pendingReviewsCount,
+      resumeTarget,
       subjectBreakdown,
       recentAttempts,
+      recentSimulations,
       latestSimulation: latestSimAttempt
         ? {
             id: latestSimAttempt.id,
@@ -292,11 +564,23 @@ export async function getDashboardOverview(params: {
       dbConnected: false,
       activeTrackCode,
       tracks: defaultTracks,
+      trackProgress: defaultTracks.map((t) => ({
+        code: t.code,
+        name: t.name,
+        targetRole: t.targetRole,
+        publishedCount: 0,
+        attemptedCount: 0,
+      })),
       metrics: EMPTY_METRICS,
+      dailyGoalQuestions: 30,
+      todayAnsweredCount: 0,
+      errorNotebookCount: 0,
       unresolvedQuestionsCount: 0,
       pendingReviewsCount: 0,
+      resumeTarget: defaultResume,
       subjectBreakdown: [],
       recentAttempts: [],
+      recentSimulations: [],
       latestSimulation: null,
     };
   }
