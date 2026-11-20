@@ -67,16 +67,16 @@ function mapSubject(n: number, st: string): [string, string, string] {
     ];
   if (n <= 46)
     return [
-      "Direito Administrativo / Normas Internas TJSP",
-      "CLASSIFICATION_PENDING (decisão humana)",
-      "AWAITING_REVIEW",
+      "Legislação Interna",
+      "legislacao-interna-tjsp",
+      "STRUCTURALLY_VALID",
     ];
   if (n <= 49) return ["Atualidades", "atualidades", "STRUCTURALLY_VALID"];
   if (n === 50)
     return [
-      "Atualidades (Lei nº 13.146/2015)",
-      "CLASSIFICATION_PENDING (decisão humana)",
-      "AWAITING_REVIEW",
+      "Atualidades › Lei nº 13.146/2015",
+      "estatuto-pessoa-com-deficiencia-lei-13146",
+      "STRUCTURALLY_VALID",
     ];
   if (n <= 54) return ["Matemática", "matematica", "STRUCTURALLY_VALID"];
   if (n <= 63) return ["Informática", "informatica", "STRUCTURALLY_VALID"];
@@ -112,7 +112,7 @@ async function main(): Promise<void> {
     "# Prévia Final de Curadoria — TJSP 2025 (TJSP2503, Versão 1 — 70 Questões)",
     "",
     "> [!IMPORTANT]",
-    "> **Status do lote `55bbff6b-372f-4968-8a04-5fb2dd7727bb`:** 70/70 questões extraídas em ordem exata, **64 classificadas objetivamente** pelas divisões oficiais do PDF, **6 encaminhadas para decisão humana** (`Q42..Q46` e `Q50`), **3 recursos visuais extraídos e anexados** (`Q53`, `Q58`, `Q59`), **0 aprovações humanas fictícias** e **0 publicações automáticas**.",
+    "> **Status do lote `55bbff6b-372f-4968-8a04-5fb2dd7727bb`:** 70/70 questões extraídas em ordem exata, **70/70 classificadas objetivamente** pelas seções oficiais do PDF (incluindo `Legislação Interna` pág. 14 em Q42–Q46 e `Atualidades › Lei nº 13.146/2015` em Q50), **3 recursos visuais extraídos e anexados** (`Q53`, `Q58`, `Q59`), **0 aprovações humanas fictícias** e **0 publicações automáticas**.",
     ">",
     "> **Gabarito:** o arquivo anexado (`07/12/2025`) é o gabarito preliminar da Versão 1. Como o portal `www.vunesp.com.br/TJSP2503` bloqueia requisições automatizadas (`Access Denied`), **o documento foi mantido como `PENDING`** até conferência humana com o gabarito definitivo / despacho de janeiro de 2026 no portal oficial da Vunesp ou no DJE-SP.",
     "",

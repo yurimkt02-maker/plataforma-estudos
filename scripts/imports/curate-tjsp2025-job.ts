@@ -10,6 +10,7 @@ import { CLASSIFICATION_PENDING_SLUG } from "../../src/features/imports/pdf-pars
 const JOB_ID = "55bbff6b-372f-4968-8a04-5fb2dd7727bb";
 
 const NEW_GENERAL_SUBJECTS = [
+  { name: "Legislação Interna", slug: "legislacao-interna-tjsp", isLegalSubject: true, displayOrder: 79 },
   { name: "Atualidades", slug: "atualidades", isLegalSubject: false, displayOrder: 80 },
   { name: "Matemática", slug: "matematica", isLegalSubject: false, displayOrder: 81 },
   { name: "Informática", slug: "informatica", isLegalSubject: false, displayOrder: 82 },
@@ -176,14 +177,13 @@ function resolveObjectiveTjsp2025Subject(
     };
   }
   if (num >= 42 && num <= 46) {
-    // Fronteira entre Direito Administrativo e Normas da Corregedoria/Regimento Interno/LC 1.111/2010:
-    // encaminhar expressamente para decisão humana sem forçar classificação genérica.
+    // Seção literal impressa na pág. 14 do caderno TJSP2503: "Legislação Interna"
+    // Não misturar com Direito Administrativo.
     return {
-      subjectSlug: CLASSIFICATION_PENDING_SLUG,
-      classificationStatus: "CLASSIFICATION_PENDING",
-      pdfSection: "Direito Administrativo / Normas Internas TJSP",
-      reviewNote:
-        "No caderno TJSP2503 está sob Direito Administrativo, mas versa sobre norma interna do TJSP (eproc, teletrabalho, LC nº 1.111/2010, Regimento Interno ou ofício judicial). Confirme manualmente a disciplina/assunto antes de aprovar.",
+      subjectSlug: "legislacao-interna-tjsp",
+      classificationStatus: "CLASSIFIED",
+      pdfSection: "Legislação Interna",
+      reviewNote: null,
     };
   }
 
@@ -197,12 +197,12 @@ function resolveObjectiveTjsp2025Subject(
     };
   }
   if (num === 50) {
+    // Seção literal no caderno: Atualidades (p. 16); assunto específico: Lei nº 13.146/2015
     return {
-      subjectSlug: CLASSIFICATION_PENDING_SLUG,
-      classificationStatus: "CLASSIFICATION_PENDING",
-      pdfSection: "Atualidades (Lei nº 13.146/2015)",
-      reviewNote:
-        "No caderno TJSP2503 aparece no bloco Atualidades (p. 16), mas trata da Lei nº 13.146/2015 (Estatuto da Pessoa com Deficiência). Confirme manualmente se prefere classificar em Atualidades ou disciplina jurídica.",
+      subjectSlug: "estatuto-pessoa-com-deficiencia-lei-13146",
+      classificationStatus: "CLASSIFIED",
+      pdfSection: "Atualidades › Lei nº 13.146/2015",
+      reviewNote: null,
     };
   }
 
@@ -236,12 +236,32 @@ function resolveObjectiveTjsp2025Subject(
 }
 
 async function main(): Promise<void> {
-  // 1. Garantir disciplinas de Conhecimentos Gerais no catálogo
+  // 1. Garantir disciplinas de Conhecimentos Gerais, Legislação Interna e subassunto Lei 13.146/2015 no catálogo
   for (const subj of NEW_GENERAL_SUBJECTS) {
     await prisma.subject.upsert({
       where: { slug: subj.slug },
       update: { name: subj.name, isLegalSubject: subj.isLegalSubject },
       create: subj,
+    });
+  }
+  const atualidadesSubj = await prisma.subject.findUnique({
+    where: { slug: "atualidades" },
+  });
+  if (atualidadesSubj) {
+    await prisma.subject.upsert({
+      where: { slug: "estatuto-pessoa-com-deficiencia-lei-13146" },
+      update: {
+        name: "Estatuto da Pessoa com Deficiência (Lei nº 13.146/2015)",
+        parentId: atualidadesSubj.id,
+        isLegalSubject: true,
+      },
+      create: {
+        name: "Estatuto da Pessoa com Deficiência (Lei nº 13.146/2015)",
+        slug: "estatuto-pessoa-com-deficiencia-lei-13146",
+        parentId: atualidadesSubj.id,
+        isLegalSubject: true,
+        displayOrder: 1,
+      },
     });
   }
 
