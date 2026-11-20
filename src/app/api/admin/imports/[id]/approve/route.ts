@@ -25,6 +25,12 @@ type StructuredItemPayload = {
   answerKeyVerified?: boolean;
   reviewState?: ImportItemReviewState;
   pageNumber?: number;
+  assets?: Array<{
+    url: string;
+    caption?: string | null;
+    assetType?: string;
+    sha256?: string | null;
+  }>;
   canonicalHash: string;
 };
 
@@ -169,6 +175,29 @@ export async function POST(
             },
           },
         });
+      }
+
+      if (Array.isArray(payload.assets) && payload.assets.length > 0) {
+        const existingAssets = await tx.questionAsset.findMany({
+          where: { questionId: question.id },
+          select: { storagePath: true },
+        });
+        const existingPaths = new Set(existingAssets.map((a) => a.storagePath));
+        for (let idx = 0; idx < payload.assets.length; idx++) {
+          const asset = payload.assets[idx]!;
+          if (!asset.url || existingPaths.has(asset.url)) continue;
+          await tx.questionAsset.create({
+            data: {
+              questionId: question.id,
+              assetType: asset.assetType || "IMAGE",
+              storagePath: asset.url,
+              objectUrl: asset.url,
+              sha256: asset.sha256 ?? null,
+              caption: asset.caption ?? null,
+              position: idx,
+            },
+          });
+        }
       }
 
       await tx.questionSource.upsert({

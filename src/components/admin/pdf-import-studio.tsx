@@ -57,6 +57,12 @@ export type ImportJobItemPreview = {
     reviewState?: "STRUCTURALLY_VALID" | "AWAITING_REVIEW" | "VERIFIED" | "REJECTED";
     reviewedByName?: string;
     pageNumber?: number;
+    assets?: Array<{
+      url: string;
+      caption?: string | null;
+      assetType?: string;
+      sha256?: string | null;
+    }>;
   };
 };
 
@@ -184,6 +190,12 @@ export function PdfImportStudio({
   const [chkEditionDate, setChkEditionDate] = useState(false);
   const [chkVersion, setChkVersion] = useState(false);
   const [chkAnswerMap, setChkAnswerMap] = useState(false);
+
+  // Revisão em lote com confirmação humana explícita
+  const [selectedItemIds, setSelectedItemIds] = useState<string[]>([]);
+  const [batchConfirmHuman, setBatchConfirmHuman] = useState(false);
+  const [batchConfirmKey, setBatchConfirmKey] = useState(false);
+  const [isBatchSaving, setIsBatchSaving] = useState(false);
 
   // Editor inline de item individual
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
@@ -454,6 +466,116 @@ export function PdfImportStudio({
     } finally {
       setPublishingJobId(null);
     }
+  }
+
+  async function handleBatchReview(action: "APPROVE" | "REJECT") {
+    if (!activeJob || selectedItemIds.length === 0) return;
+    setIsBatchSaving(true);
+    setFeedback(null);
+    try {
+      const response = await fetch(
+        `/api/admin/imports/${activeJob.id}/items/batch`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            itemIds: selectedItemIds,
+            action,
+            confirmHumanReview: batchConfirmHuman,
+            confirmAnswerKeyChecked: batchConfirmKey,
+          }),
+        }
+      );
+      const data = await response.json();
+      if (!response.ok) {
+        setFeedback({
+          type: "error",
+          message: data.message || "Falha na revisão em lote.",
+        });
+        return;
+      }
+
+      const skippedMsg =
+        Array.isArray(data.skippedItems) && data.skippedItems.length > 0
+          ? ` ${data.skippedItems.length} item(ns) mantido(s) pendente(s) por pendência de disciplina/visual.`
+          : "";
+      setFeedback({
+        type: "success",
+        message:
+          action === "APPROVE"
+            ? `${data.approvedCount} questão(ões) verificada(s) manualmente (VERIFIED).${skippedMsg}`
+            : `${data.rejectedCount} questão(ões) rejeitada(s).`,
+      });
+      const approvedSet = new Set<number>(data.approvedNumbers ?? []);
+      const rejectedSet = new Set<number>(data.rejectedNumbers ?? []);
+      const nowIso = new Date().toISOString();
+      const nextItems = activeJob.items.map((it) => {
+        if (approvedSet.has(it.originalNumber)) {
+          return {
+            ...it,
+            validationStatus: "VERIFIED",
+            reviewedAt: nowIso,
+            structuredPayloadJson: {
+              ...it.structuredPayloadJson,
+              answerKeyVerified: true,
+              reviewState: "VERIFIED" as const,
+            },
+          };
+        }
+        if (rejectedSet.has(it.originalNumber)) {
+          return {
+            ...it,
+            validationStatus: "REJECTED",
+            reviewedAt: nowIso,
+            structuredPayloadJson: {
+              ...it.structuredPayloadJson,
+              reviewState: "REJECTED" as const,
+            },
+          };
+        }
+        return it;
+      });
+
+      setActiveJob({
+        ...activeJob,
+        totalValidated: Number(data.totalValidated ?? activeJob.totalValidated),
+        items: nextItems,
+      });
+      setSelectedItemIds([]);
+      setBatchConfirmHuman(false);
+      setBatchConfirmKey(false);
+      router.refresh();
+    } catch {
+      setFeedback({
+        type: "error",
+        message: "Erro de conexão na revisão em lote.",
+      });
+    } finally {
+      setIsBatchSaving(false);
+    }
+  }
+
+  function toggleItemSelection(itemId: string) {
+    setSelectedItemIds((prev) =>
+      prev.includes(itemId) ? prev.filter((id) => id !== itemId) : [...prev, itemId]
+    );
+  }
+
+  function selectReadyItems() {
+    if (!activeJob) return;
+    const readyIds = activeJob.items
+      .filter((item) => {
+        const p = item.structuredPayloadJson ?? {};
+        const isPendingClass =
+          p.classificationStatus === "CLASSIFICATION_PENDING" ||
+          !p.subjectSlug ||
+          p.subjectSlug === "CLASSIFICATION_PENDING";
+        const isAlreadyVerified =
+          item.validationStatus === "VERIFIED" && p.reviewState === "VERIFIED";
+        return !isAlreadyVerified && !isPendingClass && !p.hasMissingVisualOrTable;
+      })
+      .map((i) => i.id);
+    setSelectedItemIds(readyIds);
   }
 
   const docsVerified =
@@ -833,6 +955,93 @@ export function PdfImportStudio({
             )}
           </div>
 
+          {/* Barra de Revisão em Lote com Confirmação Humana Explícita */}
+          <div className="p-4 rounded-lg border border-border bg-surface-subtle space-y-3 text-xs">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <strong className="text-foreground">
+                  Revisão em lote ({selectedItemIds.length} selecionada(s))
+                </strong>
+                <button
+                  type="button"
+                  onClick={selectReadyItems}
+                  className="h-7 px-2.5 rounded border border-border bg-surface text-[11px] font-medium hover:border-navy"
+                >
+                  Selecionar itens classificados e sem pendência visual
+                </button>
+                {selectedItemIds.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedItemIds([])}
+                    className="h-7 px-2.5 rounded border border-border bg-surface text-[11px] text-muted hover:text-foreground"
+                  >
+                    Limpar seleção
+                  </button>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={
+                    isBatchSaving ||
+                    selectedItemIds.length === 0 ||
+                    !docsVerified ||
+                    !batchConfirmHuman ||
+                    !batchConfirmKey
+                  }
+                  onClick={() => handleBatchReview("APPROVE")}
+                  className="h-8 px-3 rounded bg-semantic-success text-white text-[11px] font-semibold disabled:opacity-40 inline-flex items-center gap-1.5"
+                >
+                  {isBatchSaving ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                  )}
+                  <span>Aprovar selecionadas (VERIFIED)</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={
+                    isBatchSaving ||
+                    selectedItemIds.length === 0 ||
+                    !batchConfirmHuman
+                  }
+                  onClick={() => handleBatchReview("REJECT")}
+                  className="h-8 px-3 rounded bg-semantic-error text-white text-[11px] font-semibold disabled:opacity-40 inline-flex items-center gap-1.5"
+                >
+                  <XCircle className="w-3.5 h-3.5" />
+                  <span>Rejeitar selecionadas</span>
+                </button>
+              </div>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 pt-1 border-t border-border/60">
+              <label className="flex items-start gap-2 cursor-pointer text-[11px] text-foreground">
+                <input
+                  type="checkbox"
+                  checked={batchConfirmHuman}
+                  onChange={(e) => setBatchConfirmHuman(e.target.checked)}
+                  className="mt-0.5"
+                />
+                <span>
+                  Confirmo que revisei manualmente os enunciados, alternativas,
+                  disciplinas e recursos visuais das questões selecionadas.
+                </span>
+              </label>
+              <label className="flex items-start gap-2 cursor-pointer text-[11px] text-foreground">
+                <input
+                  type="checkbox"
+                  checked={batchConfirmKey}
+                  onChange={(e) => setBatchConfirmKey(e.target.checked)}
+                  className="mt-0.5"
+                />
+                <span>
+                  Confirmo que conferi o gabarito definitivo oficial (incluindo
+                  retificações e anulações pós-recurso) das questões selecionadas.
+                </span>
+              </label>
+            </div>
+          </div>
+
           {/* Layout Lado a Lado: Itens Extraídos (Esquerda) x PDF Original (Direita) */}
           <div className="grid grid-cols-1 xl:grid-cols-12 gap-5">
             {/* Coluna Esquerda: Curadoria Individual */}
@@ -866,6 +1075,13 @@ export function PdfImportStudio({
                     {/* Badges de Estado Separados */}
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="flex flex-wrap items-center gap-1.5">
+                        <input
+                          type="checkbox"
+                          aria-label={`Selecionar questão #${item.originalNumber}`}
+                          checked={selectedItemIds.includes(item.id)}
+                          onChange={() => toggleItemSelection(item.id)}
+                          className="cursor-pointer"
+                        />
                         <span className="px-2 py-0.5 rounded bg-navy text-white font-semibold text-[11px]">
                           #{item.originalNumber}
                         </span>
@@ -940,6 +1156,31 @@ export function PdfImportStudio({
                           {p.statement?.slice(0, 280)}
                           {(p.statement?.length ?? 0) > 280 ? "…" : ""}
                         </p>
+                        {Array.isArray(p.assets) && p.assets.length > 0 && (
+                          <div className="space-y-2 pt-1">
+                            {p.assets.map((asset, idx) => (
+                              <figure
+                                key={`${item.id}-asset-${idx}`}
+                                className="p-2 rounded border border-border bg-white inline-block max-w-full"
+                              >
+                                {/* eslint-disable-next-line @next/next/no-img-element */}
+                                <img
+                                  src={asset.url}
+                                  alt={
+                                    asset.caption ||
+                                    `Recurso visual da questão #${item.originalNumber}`
+                                  }
+                                  className="max-w-full max-h-56 h-auto object-contain rounded"
+                                />
+                                {asset.caption && (
+                                  <figcaption className="text-[10px] text-muted mt-1">
+                                    {asset.caption}
+                                  </figcaption>
+                                )}
+                              </figure>
+                            ))}
+                          </div>
+                        )}
                         {p.visualWarning && (
                           <p className="text-[11px] text-semantic-warning font-medium">
                             ⚠ {p.visualWarning}

@@ -47,6 +47,7 @@ export default async function SimulationExecutionPage({
           question: {
             include: {
               options: { orderBy: { displayOrder: "asc" } },
+              assets: { orderBy: { position: "asc" } },
             },
           },
         },
@@ -92,6 +93,11 @@ export default async function SimulationExecutionPage({
       options: item.question.options.map((o) => ({
         label: o.label,
         content: o.content,
+      })),
+      assets: item.question.assets.map((a) => ({
+        id: a.id,
+        url: a.objectUrl || a.storagePath,
+        caption: a.caption,
       })),
       initialSelectedAnswer: resp?.selectedAnswer ?? null,
       initialMarkedForReview: resp?.markedForReview ?? false,

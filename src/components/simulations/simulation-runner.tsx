@@ -21,6 +21,7 @@ export type RunnerItem = {
   statement: string;
   supportText: string | null;
   options: Array<{ label: string; content: string }>;
+  assets?: Array<{ id: string; url: string; caption: string | null }>;
   initialSelectedAnswer: string | null;
   initialMarkedForReview: boolean;
 };
@@ -241,6 +242,32 @@ export function SimulationRunnerClient({
           <div className="text-sm sm:text-[15px] text-foreground leading-relaxed whitespace-pre-line">
             {currentItem.statement}
           </div>
+
+          {currentItem.assets && currentItem.assets.length > 0 && (
+            <div className="space-y-3 pt-1">
+              {currentItem.assets.map((asset) => (
+                <figure
+                  key={asset.id}
+                  className="p-3 rounded-lg bg-white border border-border inline-block max-w-full"
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={asset.url}
+                    alt={
+                      asset.caption ||
+                      `Figura oficial da questão #${currentItem.originalNumber}`
+                    }
+                    className="max-w-full h-auto object-contain rounded"
+                  />
+                  {asset.caption && (
+                    <figcaption className="text-[11px] text-muted mt-1.5">
+                      {asset.caption}
+                    </figcaption>
+                  )}
+                </figure>
+              ))}
+            </div>
+          )}
 
           <div className="space-y-2.5 pt-2">
             {currentItem.options.map((opt) => {
