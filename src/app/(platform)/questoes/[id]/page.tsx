@@ -8,11 +8,18 @@ import type { QuestionBankListItem } from "@/features/question-bank/service";
 
 export default async function SingleQuestionPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ returnTo?: string }>;
 }) {
   const user = await requireServerAuth();
   const { id } = await params;
+  const resolvedSearch = await searchParams;
+  const backHref =
+    resolvedSearch.returnTo && resolvedSearch.returnTo.startsWith("/questoes")
+      ? resolvedSearch.returnTo
+      : "/questoes";
 
   if (!isDatabaseConfigured()) {
     return (
@@ -130,7 +137,7 @@ export default async function SingleQuestionPage({
     <div className="space-y-5">
       <div>
         <Link
-          href="/questoes"
+          href={backHref}
           className="inline-flex items-center gap-1.5 text-xs font-medium text-muted hover:text-foreground"
         >
           <ArrowLeft className="w-3.5 h-3.5" />

@@ -12,32 +12,131 @@ export const loginSchema = z.object({
     .max(128, "Senha excede o limite permitido."),
 });
 
+const emptyStringToUndefined = (val: unknown): unknown => {
+  if (val === null || val === undefined) return undefined;
+  if (typeof val === "string") {
+    const trimmed = val.trim();
+    return trimmed.length === 0 ? undefined : trimmed;
+  }
+  return val;
+};
+
+const optionalTrimmedString = z.preprocess(
+  emptyStringToUndefined,
+  z.string().trim().optional()
+);
+
+const optionalUuid = z.preprocess(
+  emptyStringToUndefined,
+  z.string().uuid().optional()
+);
+
+const optionalBoolean = z.preprocess((val) => {
+  if (val === "" || val === null || val === undefined) return undefined;
+  if (val === "true" || val === "1" || val === true) return true;
+  if (val === "false" || val === "0" || val === false) return false;
+  return val;
+}, z.boolean().default(false));
+
 export const questionFilterSchema = z.object({
-  trackCode: z.string().trim().optional(),
-  positionId: z.string().uuid().optional(),
-  examBoardId: z.string().uuid().optional(),
-  institutionId: z.string().uuid().optional(),
-  subjectId: z.string().uuid().optional(),
-  year: z.coerce.number().int().min(2000).max(2035).optional(),
-  questionType: z.enum(["MULTIPLE_CHOICE", "TRUE_FALSE"]).optional(),
-  difficulty: z.enum(["EASY", "MEDIUM", "HARD"]).optional(),
-  resolutionFilter: z
-    .enum(["ALL", "RESOLVED", "UNRESOLVED"])
-    .default("ALL"),
-  accuracyFilter: z.enum(["ALL", "CORRECT", "WRONG"]).default("ALL"),
-  onlyBookmarked: z.coerce.boolean().default(false),
-  onlyVerifiedExplanations: z.coerce.boolean().default(false),
-  includeAnnulled: z.coerce.boolean().default(false),
-  onlyOutdated: z.coerce.boolean().default(false),
-  query: z.string().trim().max(200).optional(),
-  sortBy: z
-    .enum(["RECENT", "DIFFICULTY", "REVIEW_PRIORITY", "ORIGINAL_NUMBER"])
-    .default("ORIGINAL_NUMBER"),
-  page: z.coerce.number().int().min(1).default(1),
-  pageSize: z.coerce.number().int().min(1).max(50).default(15),
+  trackCode: optionalTrimmedString,
+  positionId: optionalUuid,
+  examBoardId: optionalUuid,
+  institutionId: optionalUuid,
+  disciplineId: optionalUuid,
+  topicId: optionalUuid,
+  subjectId: optionalUuid,
+  year: z.preprocess(
+    emptyStringToUndefined,
+    z.coerce.number().int().min(2000).max(2035).optional()
+  ),
+  questionType: z.preprocess(
+    emptyStringToUndefined,
+    z.enum(["MULTIPLE_CHOICE", "TRUE_FALSE"]).optional()
+  ),
+  difficulty: z.preprocess(
+    emptyStringToUndefined,
+    z.enum(["EASY", "MEDIUM", "HARD"]).optional()
+  ),
+  resolutionFilter: z.preprocess(
+    emptyStringToUndefined,
+    z.enum(["ALL", "RESOLVED", "UNRESOLVED"]).default("ALL")
+  ),
+  accuracyFilter: z.preprocess(
+    emptyStringToUndefined,
+    z.enum(["ALL", "CORRECT", "WRONG"]).default("ALL")
+  ),
+  onlyBookmarked: optionalBoolean,
+  onlyVerifiedExplanations: optionalBoolean,
+  includeAnnulled: optionalBoolean,
+  onlyOutdated: optionalBoolean,
+  query: z.preprocess(
+    emptyStringToUndefined,
+    z.string().trim().max(200).optional()
+  ),
+  sortBy: z.preprocess(
+    emptyStringToUndefined,
+    z
+      .enum(["RECENT", "DIFFICULTY", "REVIEW_PRIORITY", "ORIGINAL_NUMBER"])
+      .default("ORIGINAL_NUMBER")
+  ),
+  page: z.preprocess(
+    emptyStringToUndefined,
+    z.coerce.number().int().min(1).default(1)
+  ),
+  pageSize: z.preprocess(
+    emptyStringToUndefined,
+    z.coerce.number().int().min(1).max(50).default(15)
+  ),
 });
 
 export type QuestionFilterInput = z.infer<typeof questionFilterSchema>;
+
+/**
+ * Normaliza e valida cada campo individualmente:
+ * - Strings vazias ("") viram undefined antes da validação (não invalidam o formulário)
+ * - Se um parâmetro específico for realmente inválido (ex.: UUID corrompido na URL),
+ *   apenas esse campo é descartado e reportado em `invalidFields`, preservando todos os demais filtros válidos.
+ */
+export function parseQuestionFiltersResilient(
+  rawParams: Record<string, string | string[] | undefined>
+): {
+  filters: QuestionFilterInput;
+  invalidFields: string[];
+} {
+  const flat: Record<string, unknown> = {};
+  for (const [key, val] of Object.entries(rawParams)) {
+    const first = Array.isArray(val) ? val[0] : val;
+    flat[key] = emptyStringToUndefined(first);
+  }
+  if (!flat.trackCode && flat.track) {
+    flat.trackCode = flat.track;
+  }
+
+  const full = questionFilterSchema.safeParse(flat);
+  if (full.success) {
+    return { filters: full.data, invalidFields: [] };
+  }
+
+  const invalidFields = Array.from(
+    new Set(
+      full.error.issues
+        .map((issue) => String(issue.path[0] ?? ""))
+        .filter(Boolean)
+    )
+  );
+
+  const sanitized: Record<string, unknown> = { ...flat };
+  for (const badField of invalidFields) {
+    delete sanitized[badField];
+  }
+
+  const recovered = questionFilterSchema.safeParse(sanitized);
+  return {
+    filters: recovered.success ? recovered.data : questionFilterSchema.parse({}),
+    invalidFields,
+  };
+}
 
 export const submitAnswerSchema = z.object({
   questionId: z.string().uuid("ID da questão inválido."),

@@ -34,9 +34,11 @@ const ASSISTANT_COMMANDS: Array<{
 export function QuestionWorkspaceCard({
   question,
   indexLabel,
+  returnTo,
 }: {
   question: QuestionBankListItem;
   indexLabel?: string;
+  returnTo?: string;
 }) {
   const [selectedOption, setSelectedOption] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -179,7 +181,11 @@ export function QuestionWorkspaceCard({
             <Bookmark className="w-3.5 h-3.5" />
           </button>
           <Link
-            href={`/questoes/${question.id}`}
+            href={
+              returnTo
+                ? `/questoes/${question.id}?returnTo=${encodeURIComponent(returnTo)}`
+                : `/questoes/${question.id}`
+            }
             className="px-2.5 py-1 rounded-md border border-border bg-surface text-[11px] font-medium text-foreground hover:border-petrol"
           >
             Foco Individual

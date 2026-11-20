@@ -620,6 +620,113 @@ export type QuestionBankListItem = {
 };
 
 /**
+ * Constrói o filtro Prisma `where` para busca de questões publicadas de forma pura e testável:
+ * - Disciplina principal (`disciplineId`) inclui todas as questões da disciplina e de seus assuntos descendentes (`resolvedSubjectIds`).
+ * - Assunto específico (`topicId`) restringe exclusivamente às questões vinculadas àquele assunto.
+ * - `resolutionFilter` e `accuracyFilter` são combinados via `AND` (nunca se sobrescrevem, inclusive em combinações conflitantes como UNRESOLVED + WRONG).
+ */
+export function buildQuestionSearchWhereClause(params: {
+  userId: string;
+  filters: QuestionFilterInput;
+  resolvedSubjectIds?: string[];
+}): Record<string, unknown> {
+  const { userId, filters, resolvedSubjectIds } = params;
+
+  const whereClause: Record<string, unknown> = {
+    status: "PUBLISHED",
+  };
+  const andConditions: Array<Record<string, unknown>> = [];
+
+  if (filters.questionType) {
+    whereClause.questionType = filters.questionType;
+  }
+  if (filters.difficulty) {
+    whereClause.difficulty = filters.difficulty;
+  }
+  if (filters.onlyOutdated) {
+    whereClause.isOutdated = true;
+  }
+
+  if (resolvedSubjectIds && resolvedSubjectIds.length > 0) {
+    whereClause.subjects = {
+      some:
+        resolvedSubjectIds.length === 1
+          ? { subjectId: resolvedSubjectIds[0] }
+          : { subjectId: { in: resolvedSubjectIds } },
+    };
+  }
+
+  if (filters.onlyBookmarked) {
+    whereClause.bookmarks = {
+      some: { userId },
+    };
+  }
+  if (filters.onlyVerifiedExplanations) {
+    whereClause.explanations = {
+      some: { status: "VERIFIED" },
+    };
+  }
+  if (filters.query && filters.query.length >= 2) {
+    andConditions.push({
+      OR: [
+        { statement: { contains: filters.query, mode: "insensitive" } },
+        { supportText: { contains: filters.query, mode: "insensitive" } },
+      ],
+    });
+  }
+
+  if (filters.resolutionFilter === "RESOLVED") {
+    andConditions.push({ attempts: { some: { userId } } });
+  } else if (filters.resolutionFilter === "UNRESOLVED") {
+    andConditions.push({ attempts: { none: { userId } } });
+  }
+
+  if (filters.accuracyFilter === "CORRECT") {
+    andConditions.push({ attempts: { some: { userId, isCorrect: true } } });
+  } else if (filters.accuracyFilter === "WRONG") {
+    andConditions.push({ attempts: { some: { userId, isCorrect: false } } });
+  }
+
+  if (andConditions.length > 0) {
+    whereClause.AND = andConditions;
+  }
+
+  const instanceFilter: Record<string, unknown> = {};
+  if (!filters.includeAnnulled) {
+    instanceFilter.isAnnulled = false;
+  }
+
+  const editionFilter: Record<string, unknown> = {};
+  if (filters.year) editionFilter.year = filters.year;
+  if (filters.examBoardId) editionFilter.examBoardId = filters.examBoardId;
+  if (filters.positionId) editionFilter.positionId = filters.positionId;
+  if (filters.trackCode || filters.institutionId) {
+    editionFilter.position = {
+      ...(filters.institutionId
+        ? { institutionId: filters.institutionId }
+        : {}),
+      ...(filters.trackCode
+        ? { studyTrack: { code: filters.trackCode.toUpperCase() } }
+        : {}),
+    };
+  }
+
+  if (Object.keys(editionFilter).length > 0) {
+    instanceFilter.examForm = {
+      examEdition: editionFilter,
+    };
+  }
+
+  if (Object.keys(instanceFilter).length > 0) {
+    whereClause.examInstances = {
+      some: instanceFilter,
+    };
+  }
+
+  return whereClause;
+}
+
+/**
  * Busca questões reais publicadas aplicando todos os filtros combinados e paginação no servidor.
  */
 export async function searchPublishedQuestions(params: {
@@ -645,84 +752,36 @@ export async function searchPublishedQuestions(params: {
   }
 
   try {
-    const whereClause: Record<string, unknown> = {
-      status: "PUBLISHED",
-    };
+    // Resolver hierarquia real de disciplina/assunto no Prisma ANTES do count e da paginação
+    let resolvedSubjectIds: string[] | undefined;
 
-    if (filters.questionType) {
-      whereClause.questionType = filters.questionType;
-    }
-    if (filters.difficulty) {
-      whereClause.difficulty = filters.difficulty;
-    }
-    if (filters.onlyOutdated) {
-      whereClause.isOutdated = true;
-    }
-    if (filters.subjectId) {
-      whereClause.subjects = {
-        some: { subjectId: filters.subjectId },
-      };
-    }
-    if (filters.onlyBookmarked) {
-      whereClause.bookmarks = {
-        some: { userId },
-      };
-    }
-    if (filters.onlyVerifiedExplanations) {
-      whereClause.explanations = {
-        some: { status: "VERIFIED" },
-      };
-    }
-    if (filters.query && filters.query.length >= 2) {
-      whereClause.OR = [
-        { statement: { contains: filters.query, mode: "insensitive" } },
-        { supportText: { contains: filters.query, mode: "insensitive" } },
+    if (filters.topicId) {
+      // Assunto específico: retorna exclusivamente questões vinculadas àquele assunto
+      resolvedSubjectIds = [filters.topicId];
+    } else if (filters.disciplineId) {
+      // Disciplina principal: inclui a própria disciplina e todos os seus assuntos descendentes cadastrados
+      const children = await prisma.subject.findMany({
+        where: { parentId: filters.disciplineId },
+        select: { id: true },
+      });
+      resolvedSubjectIds = [
+        filters.disciplineId,
+        ...children.map((c) => c.id),
       ];
+    } else if (filters.subjectId) {
+      // Compatibilidade retroativa com URLs legadas (?subjectId=...)
+      const children = await prisma.subject.findMany({
+        where: { parentId: filters.subjectId },
+        select: { id: true },
+      });
+      resolvedSubjectIds = [filters.subjectId, ...children.map((c) => c.id)];
     }
 
-    if (filters.resolutionFilter === "RESOLVED") {
-      whereClause.attempts = { some: { userId } };
-    } else if (filters.resolutionFilter === "UNRESOLVED") {
-      whereClause.attempts = { none: { userId } };
-    }
-
-    if (filters.accuracyFilter === "CORRECT") {
-      whereClause.attempts = { some: { userId, isCorrect: true } };
-    } else if (filters.accuracyFilter === "WRONG") {
-      whereClause.attempts = { some: { userId, isCorrect: false } };
-    }
-
-    const instanceFilter: Record<string, unknown> = {};
-    if (!filters.includeAnnulled) {
-      instanceFilter.isAnnulled = false;
-    }
-
-    const editionFilter: Record<string, unknown> = {};
-    if (filters.year) editionFilter.year = filters.year;
-    if (filters.examBoardId) editionFilter.examBoardId = filters.examBoardId;
-    if (filters.positionId) editionFilter.positionId = filters.positionId;
-    if (filters.trackCode || filters.institutionId) {
-      editionFilter.position = {
-        ...(filters.institutionId
-          ? { institutionId: filters.institutionId }
-          : {}),
-        ...(filters.trackCode
-          ? { studyTrack: { code: filters.trackCode.toUpperCase() } }
-          : {}),
-      };
-    }
-
-    if (Object.keys(editionFilter).length > 0) {
-      instanceFilter.examForm = {
-        examEdition: editionFilter,
-      };
-    }
-
-    if (Object.keys(instanceFilter).length > 0) {
-      whereClause.examInstances = {
-        some: instanceFilter,
-      };
-    }
+    const whereClause = buildQuestionSearchWhereClause({
+      userId,
+      filters,
+      resolvedSubjectIds,
+    });
 
     const skip = (filters.page - 1) * filters.pageSize;
 
@@ -911,6 +970,203 @@ export async function getAcademicCatalogMetadata() {
       editions: INITIAL_EXAM_EDITIONS,
       subjects: INITIAL_SUBJECTS,
       legalSources: INITIAL_VERIFIED_LEGAL_SOURCES,
+    };
+  }
+}
+
+export type FilterFacetTopic = {
+  id: string;
+  name: string;
+  slug: string;
+  parentId: string;
+  totalCount: number;
+  countByTrack: Record<string, number>;
+};
+
+export type FilterFacetDiscipline = {
+  id: string;
+  name: string;
+  slug: string;
+  totalCount: number;
+  countByTrack: Record<string, number>;
+  topics: FilterFacetTopic[];
+};
+
+export type QuestionBankFilterFacets = {
+  totalPublished: number;
+  countByTrack: Record<string, number>;
+  disciplines: FilterFacetDiscipline[];
+  years: number[];
+};
+
+/**
+ * Calcula contagens reais de questões publicadas (não anuladas por padrão, ou incluindo anuladas)
+ * por concurso, disciplina (incluindo descendentes) e assunto específico para alimentar os selects dependentes.
+ */
+export async function getQuestionBankFilterFacets(params?: {
+  includeAnnulled?: boolean;
+}): Promise<QuestionBankFilterFacets> {
+  if (!isDatabaseConfigured()) {
+    return {
+      totalPublished: 0,
+      countByTrack: {},
+      disciplines: [],
+      years: [2026, 2025, 2024, 2023, 2022, 2021, 2019],
+    };
+  }
+
+  try {
+    const includeAnnulled = Boolean(params?.includeAnnulled);
+    const [rootSubjects, publishedQuestions] = await Promise.all([
+      prisma.subject.findMany({
+        where: { parentId: null },
+        include: { children: { orderBy: { displayOrder: "asc" } } },
+        orderBy: [{ displayOrder: "asc" }, { name: "asc" }],
+      }),
+      prisma.question.findMany({
+        where: {
+          status: "PUBLISHED",
+          ...(includeAnnulled
+            ? {}
+            : { examInstances: { some: { isAnnulled: false } } }),
+        },
+        select: {
+          id: true,
+          subjects: {
+            select: {
+              subjectId: true,
+              subject: { select: { parentId: true } },
+            },
+          },
+          examInstances: {
+            where: includeAnnulled ? {} : { isAnnulled: false },
+            select: {
+              examForm: {
+                select: {
+                  examEdition: {
+                    select: {
+                      year: true,
+                      position: {
+                        select: { studyTrack: { select: { code: true } } },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      }),
+    ]);
+
+    const countByTrack: Record<string, number> = {};
+    const discTotalSets = new Map<string, Set<string>>();
+    const discTrackSets = new Map<string, Map<string, Set<string>>>();
+    const topicTotalSets = new Map<string, Set<string>>();
+    const topicTrackSets = new Map<string, Map<string, Set<string>>>();
+    const yearsSet = new Set<number>();
+
+    const addToSetMap = (map: Map<string, Set<string>>, key: string, qId: string) => {
+      let s = map.get(key);
+      if (!s) {
+        s = new Set();
+        map.set(key, s);
+      }
+      s.add(qId);
+    };
+
+    const addToNestedSetMap = (
+      map: Map<string, Map<string, Set<string>>>,
+      outerKey: string,
+      innerKey: string,
+      qId: string
+    ) => {
+      let inner = map.get(outerKey);
+      if (!inner) {
+        inner = new Map();
+        map.set(outerKey, inner);
+      }
+      addToSetMap(inner, innerKey, qId);
+    };
+
+    for (const q of publishedQuestions) {
+      const tracksForQuestion = new Set<string>();
+      for (const inst of q.examInstances) {
+        const code = inst.examForm.examEdition.position.studyTrack.code;
+        tracksForQuestion.add(code);
+        yearsSet.add(inst.examForm.examEdition.year);
+      }
+
+      for (const code of tracksForQuestion) {
+        countByTrack[code] = (countByTrack[code] ?? 0) + 1;
+      }
+
+      for (const qs of q.subjects) {
+        const rootId = qs.subject.parentId ?? qs.subjectId;
+        addToSetMap(discTotalSets, rootId, q.id);
+        for (const code of tracksForQuestion) {
+          addToNestedSetMap(discTrackSets, rootId, code, q.id);
+        }
+
+        if (qs.subject.parentId) {
+          addToSetMap(topicTotalSets, qs.subjectId, q.id);
+          for (const code of tracksForQuestion) {
+            addToNestedSetMap(topicTrackSets, qs.subjectId, code, q.id);
+          }
+        }
+      }
+    }
+
+    const disciplines: FilterFacetDiscipline[] = rootSubjects.map((root) => {
+      const dTrackMap = discTrackSets.get(root.id);
+      const dCountByTrack: Record<string, number> = {};
+      if (dTrackMap) {
+        for (const [code, set] of dTrackMap.entries()) {
+          dCountByTrack[code] = set.size;
+        }
+      }
+
+      const topics: FilterFacetTopic[] = root.children.map((child) => {
+        const tTrackMap = topicTrackSets.get(child.id);
+        const tCountByTrack: Record<string, number> = {};
+        if (tTrackMap) {
+          for (const [code, set] of tTrackMap.entries()) {
+            tCountByTrack[code] = set.size;
+          }
+        }
+        return {
+          id: child.id,
+          name: child.name,
+          slug: child.slug,
+          parentId: root.id,
+          totalCount: topicTotalSets.get(child.id)?.size ?? 0,
+          countByTrack: tCountByTrack,
+        };
+      });
+
+      return {
+        id: root.id,
+        name: root.name,
+        slug: root.slug,
+        totalCount: discTotalSets.get(root.id)?.size ?? 0,
+        countByTrack: dCountByTrack,
+        topics,
+      };
+    });
+
+    return {
+      totalPublished: publishedQuestions.length,
+      countByTrack,
+      disciplines,
+      years: Array.from(yearsSet).sort((a, b) => b - a),
+    };
+  } catch (error) {
+    logger.error("QUESTION_FILTER_FACETS_FAILED", error);
+    return {
+      totalPublished: 0,
+      countByTrack: {},
+      disciplines: [],
+      years: [2026, 2025, 2024, 2023, 2022, 2021, 2019],
     };
   }
 }

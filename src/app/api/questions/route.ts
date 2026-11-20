@@ -9,8 +9,11 @@ export async function GET(request: NextRequest) {
   const auth = await requireApiAuth();
   if (!auth.authorized) return auth.response;
 
-  const searchParams = Object.fromEntries(request.nextUrl.searchParams.entries());
-  const parsed = questionFilterSchema.safeParse(searchParams);
+  const rawParams = Object.fromEntries(request.nextUrl.searchParams.entries());
+  const parsed = questionFilterSchema.safeParse({
+    ...rawParams,
+    trackCode: rawParams.trackCode || rawParams.track || undefined,
+  });
 
   if (!parsed.success) {
     return NextResponse.json(
