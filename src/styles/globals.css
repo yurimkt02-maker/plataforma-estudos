@@ -2,29 +2,101 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ============================================================================
+ * Design System — Estúdio Editorial de Alta Precisão (Identidade Roxa)
+ * Paleta oficial: #392C67 (Roxo Profundo), #612C67 (Roxo Ameixa),
+ *                 #FAF8F5 (Marfim Quente), #111316 (Obsidiana)
+ * ============================================================================ */
+
 :root {
-  --font-sora: "Sora", "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
-  --font-inter: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  --bg-primary: #F7F8FA;
+  /* Superfícies — Modo Claro (Papel Editorial Quente) */
+  --bg-canvas: #FAF8F5;
+  --bg-primary: #FAF8F5;
   --bg-surface: #FFFFFF;
-  --bg-surface-subtle: #F0F3F7;
-  --text-primary: #172638;
-  --text-secondary: #687585;
-  --border-color: #E4E8ED;
-  --color-navy: #183A54;
-  --color-petrol: #14877B;
-  --color-success: #16865D;
-  --color-error: #D65A53;
-  --color-warning: #D79B36;
+  --bg-surface-subtle: #F4F1EC;
+  --bg-brand-tint: #F3F0F8;
+
+  /* Bordas */
+  --border-color: #E8E3DC;
+  --border-strong: #CFC8BE;
+
+  /* Tipografia / Tinta (WCAG AAA nos enunciados) */
+  --text-primary: #15171C;
+  --text-secondary: #555B66;
+  --text-muted: #747B87;
+
+  /* Marca — Roxo Profundo & Roxo Ameixa */
+  --brand-deep: #392C67;
+  --brand-plum: #612C67;
+  --brand-primary: #392C67;
+  --brand-primary-dark: #2C2152;
+  --brand-primary-light: #4D3D85;
+  --brand-accent-text: #392C67;
+  --brand-gradient: linear-gradient(135deg, #392C67 0%, #612C67 100%);
+  --focus-ring: rgba(57, 44, 103, 0.38);
+
+  /* Estados semânticos (WCAG AA+) */
+  --status-success: #1B6E53;
+  --status-success-bg: #EAF5F0;
+  --status-error: #B83B3B;
+  --status-error-bg: #FCEEEE;
+  --status-warning: #9E6B14;
+  --status-warning-bg: #FDF5E6;
+
+  /* Estado desabilitado acessível */
+  --state-disabled-bg: #ECE8E1;
+  --state-disabled-text: #7A808B;
+
+  /* Compatibilidade com tokens legados */
+  --color-navy: var(--brand-primary);
+  --color-petrol: var(--brand-plum);
+  --color-success: var(--status-success);
+  --color-error: var(--status-error);
+  --color-warning: var(--status-warning);
+
+  color-scheme: light;
 }
 
 .dark {
-  --bg-primary: #0D1520;
-  --bg-surface: #131E2D;
-  --bg-surface-subtle: #1A283B;
-  --text-primary: #ECF0F5;
-  --text-secondary: #94A3B8;
-  --border-color: #243449;
+  /* Superfícies — Modo Escuro (Obsidiana Calibrada — não é inversão) */
+  --bg-canvas: #111316;
+  --bg-primary: #111316;
+  --bg-surface: #171A21;
+  --bg-surface-subtle: #1E222B;
+  --bg-brand-tint: rgba(138, 114, 216, 0.14);
+
+  /* Bordas */
+  --border-color: #262A35;
+  --border-strong: #393F4F;
+
+  /* Tipografia / Tinta (Pergaminho suave para leitura noturna) */
+  --text-primary: #EDEAE4;
+  --text-secondary: #9CA2AF;
+  --text-muted: #767D8C;
+
+  /* Marca recalibrada para alto contraste sobre Obsidiana */
+  --brand-deep: #392C67;
+  --brand-plum: #612C67;
+  --brand-primary: #6E56B8;
+  --brand-primary-dark: #5A449E;
+  --brand-primary-light: #8A72D8;
+  --brand-accent-text: #C4B5F4;
+  --brand-gradient: linear-gradient(135deg, #392C67 0%, #612C67 100%);
+  --focus-ring: rgba(196, 181, 244, 0.45);
+
+  /* Estados semânticos calibrados para fundo escuro */
+  --status-success: #46B58D;
+  --status-success-bg: rgba(70, 181, 141, 0.14);
+  --status-error: #E67676;
+  --status-error-bg: rgba(230, 118, 118, 0.14);
+  --status-warning: #E5B352;
+  --status-warning-bg: rgba(229, 179, 82, 0.14);
+
+  /* Estado desabilitado acessível no dark mode */
+  --state-disabled-bg: #232732;
+  --state-disabled-text: #737A89;
+
+  color-scheme: dark;
 }
 
 @layer base {
@@ -36,18 +108,44 @@
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     text-rendering: optimizeLegibility;
+    overflow-x: clip;
   }
 
   body {
-    @apply bg-background text-foreground font-sans selection:bg-petrol/15 selection:text-foreground;
+    @apply bg-background text-foreground font-sans;
+    overflow-x: clip;
   }
 
-  h1, h2, h3, h4, .font-heading {
+  body ::selection {
+    background-color: var(--bg-brand-tint);
+    color: var(--text-primary);
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  .font-heading {
     @apply font-display tracking-tight;
   }
 
   :focus-visible {
-    @apply outline-2 outline-offset-2 outline-petrol;
+    outline: 2px solid var(--brand-primary);
+    outline-offset: 2px;
+  }
+}
+
+@layer utilities {
+  .bg-brand-gradient {
+    background-image: var(--brand-gradient);
+  }
+
+  .tabular-nums-strict {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
   }
 }
 
@@ -62,7 +160,7 @@
   }
 }
 
-/* Custom subtle scrollbars for long study sessions */
+/* Scrollbars discretas para longas sessões de leitura */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -73,10 +171,10 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(104, 117, 133, 0.25);
+  background: rgba(116, 123, 135, 0.28);
   border-radius: 9999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(104, 117, 133, 0.45);
+  background: rgba(116, 123, 135, 0.48);
 }
