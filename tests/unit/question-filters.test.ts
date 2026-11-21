@@ -4,7 +4,10 @@ import {
   parseQuestionFiltersResilient,
   questionFilterSchema,
 } from "@/lib/validations/schemas";
-import { buildQuestionSearchWhereClause } from "@/features/question-bank/service";
+import {
+  buildQuestionSearchWhereClause,
+  sortQuestionIdsByReviewPriority,
+} from "@/features/question-bank/service";
 
 const UUID_DISC = "fdfe9b2f-4858-4b69-87d2-fae6ce43a23d";
 const UUID_TOPIC_1 = "234ad262-6fbb-46b0-a23e-05d05e8bb491";
@@ -190,5 +193,56 @@ describe("Filtros do Banco de Questões — Validação, Hierarquia e Combinaç�
     expect(spPage2.has("resolutionFilter")).toBe(false);
     expect(spPage2.has("sortBy")).toBe(false);
     expect(spPage2.has("positionId")).toBe(false);
+  });
+
+  it("aplica filtro de dificuldade (EASY, MEDIUM, HARD) e preserva sortBy REVIEW_PRIORITY na URL", () => {
+    const filters = questionFilterSchema.parse({
+      difficulty: "HARD",
+      sortBy: "REVIEW_PRIORITY",
+      examBoardId: UUID_BOARD,
+      positionId: UUID_DISC,
+      year: "2024",
+    });
+
+    const where = buildQuestionSearchWhereClause({
+      userId: UUID_USER,
+      filters,
+    });
+
+    expect(where.difficulty).toBe("HARD");
+    expect(where.examInstances).toEqual({
+      some: {
+        isAnnulled: false,
+        examForm: {
+          examEdition: {
+            year: 2024,
+            examBoardId: UUID_BOARD,
+            positionId: UUID_DISC,
+          },
+        },
+      },
+    });
+
+    const sp = buildQuestionFilterSearchParams(filters, 1);
+    expect(sp.get("difficulty")).toBe("HARD");
+    expect(sp.get("sortBy")).toBe("REVIEW_PRIORITY");
+  });
+
+  it("ordena questões por prioridade real de revisão (fila vencida -> erradas não recuperadas -> demais)", () => {
+    const ordered = sortQuestionIdsByReviewPriority({
+      questionIds: ["q-normal", "q-wrong", "q-review-later", "q-review-urgent"],
+      pendingReviews: [
+        { questionId: "q-review-later", nextReviewAt: new Date("2026-11-25T10:00:00Z") },
+        { questionId: "q-review-urgent", nextReviewAt: new Date("2026-11-18T10:00:00Z") },
+      ],
+      wrongQuestionIds: new Set(["q-wrong"]),
+    });
+
+    expect(ordered).toEqual([
+      "q-review-urgent",
+      "q-review-later",
+      "q-wrong",
+      "q-normal",
+    ]);
   });
 });

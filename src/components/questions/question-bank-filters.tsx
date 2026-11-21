@@ -115,21 +115,25 @@ export function QuestionBankFilters({
     initialFilters.includeAnnulled
   );
 
-  const hasAdvancedActive = Boolean(
-    examBoardId ||
-      positionId ||
-      institutionId ||
-      year ||
-      questionType ||
-      difficulty ||
-      resolutionFilter !== "ALL" ||
-      accuracyFilter !== "ALL" ||
-      onlyBookmarked ||
-      onlyVerifiedExplanations ||
-      includeAnnulled ||
-      sortBy !== "ORIGINAL_NUMBER"
+  const activeAdvancedCount = [
+    Boolean(examBoardId),
+    Boolean(positionId),
+    Boolean(institutionId),
+    Boolean(year),
+    Boolean(questionType),
+    Boolean(difficulty),
+    resolutionFilter !== "ALL",
+    accuracyFilter !== "ALL",
+    onlyBookmarked,
+    onlyVerifiedExplanations,
+    includeAnnulled,
+    sortBy !== "ORIGINAL_NUMBER",
+  ].filter(Boolean).length;
+
+  // No mobile inicia recolhido (salvo se houver filtro avançado ativo); no desktop fica visível por padrão (lg:block)
+  const [showAdvancedMobile, setShowAdvancedMobile] = useState(
+    activeAdvancedCount > 0
   );
-  const [showAdvanced, setShowAdvanced] = useState(hasAdvancedActive);
 
   // Disciplinas disponíveis conforme o concurso selecionado
   const availableDisciplines = useMemo(() => {
@@ -394,6 +398,72 @@ export function QuestionBankFilters({
       },
     });
   }
+  if (initialFilters.difficulty) {
+    const diffLabel =
+      initialFilters.difficulty === "EASY"
+        ? "Fácil"
+        : initialFilters.difficulty === "MEDIUM"
+          ? "Média"
+          : "Difícil";
+    activeChips.push({
+      key: "difficulty",
+      label: `Dificuldade: ${diffLabel}`,
+      onRemove: () => {
+        setDifficulty("");
+        navigateWithState({ difficulty: undefined });
+      },
+    });
+  }
+  if (initialFilters.positionId) {
+    const p = catalog.positions.find((x) => x.id === initialFilters.positionId);
+    activeChips.push({
+      key: "position",
+      label: `Cargo: ${p?.name ?? "Selecionado"}`,
+      onRemove: () => {
+        setPositionId("");
+        navigateWithState({ positionId: undefined });
+      },
+    });
+  }
+  if (initialFilters.institutionId) {
+    const inst = catalog.institutions.find(
+      (x) => x.id === initialFilters.institutionId
+    );
+    activeChips.push({
+      key: "institution",
+      label: `Instituição: ${inst?.acronym ?? "Selecionada"}`,
+      onRemove: () => {
+        setInstitutionId("");
+        navigateWithState({ institutionId: undefined });
+      },
+    });
+  }
+  if (initialFilters.onlyVerifiedExplanations) {
+    activeChips.push({
+      key: "verifiedExp",
+      label: "Comentário verificado",
+      onRemove: () => {
+        setOnlyVerifiedExplanations(false);
+        navigateWithState({ onlyVerifiedExplanations: false });
+      },
+    });
+  }
+  if (initialFilters.sortBy && initialFilters.sortBy !== "ORIGINAL_NUMBER") {
+    const sortLabel =
+      initialFilters.sortBy === "RECENT"
+        ? "Mais recentes"
+        : initialFilters.sortBy === "DIFFICULTY"
+          ? "Maior dificuldade"
+          : "Prioridade de revisão";
+    activeChips.push({
+      key: "sortBy",
+      label: `Ordem: ${sortLabel}`,
+      onRemove: () => {
+        setSortBy("ORIGINAL_NUMBER");
+        navigateWithState({ sortBy: "ORIGINAL_NUMBER" });
+      },
+    });
+  }
   if (initialFilters.includeAnnulled) {
     activeChips.push({
       key: "annulled",
@@ -543,13 +613,19 @@ export function QuestionBankFilters({
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
-              onClick={() => setShowAdvanced((prev) => !prev)}
-              aria-expanded={showAdvanced}
-              className="inline-flex items-center gap-1.5 h-10 px-3.5 rounded-md border border-border bg-surface hover:bg-surface-subtle text-xs font-medium text-foreground transition-colors"
+              onClick={() => setShowAdvancedMobile((prev) => !prev)}
+              aria-expanded={showAdvancedMobile}
+              aria-controls="advanced-filters-panel"
+              className="lg:hidden inline-flex items-center gap-1.5 h-10 px-3.5 rounded-md border border-border bg-surface hover:bg-surface-subtle text-xs font-medium text-foreground transition-colors"
             >
               <SlidersHorizontal className="w-3.5 h-3.5 text-brand-accent" />
               <span>Filtros avançados</span>
-              {showAdvanced ? (
+              {activeAdvancedCount > 0 && (
+                <span className="px-1.5 py-0.5 rounded-full bg-brand-tint text-brand-accent text-[10px] font-semibold tabular-nums-strict">
+                  {activeAdvancedCount}
+                </span>
+              )}
+              {showAdvancedMobile ? (
                 <ChevronUp className="w-3.5 h-3.5 text-muted" />
               ) : (
                 <ChevronDown className="w-3.5 h-3.5 text-muted" />
@@ -565,218 +641,249 @@ export function QuestionBankFilters({
           </div>
         </div>
 
-        {/* Filtros Avançados Recolhíveis */}
-        {showAdvanced && (
-          <div className="pt-4 border-t border-border space-y-4">
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-              <div>
-                <label
-                  htmlFor="filter-board"
-                  className="block text-[11px] font-medium text-muted mb-1"
-                >
-                  Banca Organizadora
-                </label>
-                <select
-                  id="filter-board"
-                  value={examBoardId}
-                  onChange={(e) => setExamBoardId(e.target.value)}
-                  className="w-full h-9 px-2.5 rounded-md bg-background border border-border text-xs text-foreground"
-                >
-                  <option value="">Todas as bancas</option>
-                  {catalog.boards.map((b) => (
-                    <option key={b.id} value={b.id}>
-                      {b.acronym} — {b.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label
-                  htmlFor="filter-year"
-                  className="block text-[11px] font-medium text-muted mb-1"
-                >
-                  Ano da Prova
-                </label>
-                <select
-                  id="filter-year"
-                  value={year}
-                  onChange={(e) => setYear(e.target.value)}
-                  className="w-full h-9 px-2.5 rounded-md bg-background border border-border text-xs text-foreground"
-                >
-                  <option value="">Todos os anos</option>
-                  {facets.years.map((y) => (
-                    <option key={y} value={String(y)}>
-                      {y}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label
-                  htmlFor="filter-type"
-                  className="block text-[11px] font-medium text-muted mb-1"
-                >
-                  Modalidade
-                </label>
-                <select
-                  id="filter-type"
-                  value={questionType}
-                  onChange={(e) => setQuestionType(e.target.value)}
-                  className="w-full h-9 px-2.5 rounded-md bg-background border border-border text-xs text-foreground"
-                >
-                  <option value="">Todas</option>
-                  <option value="MULTIPLE_CHOICE">Múltipla Escolha</option>
-                  <option value="TRUE_FALSE">Certo / Errado</option>
-                </select>
-              </div>
-
-              <div>
-                <label
-                  htmlFor="filter-sort"
-                  className="block text-[11px] font-medium text-muted mb-1"
-                >
-                  Ordenação
-                </label>
-                <select
-                  id="filter-sort"
-                  value={sortBy}
-                  onChange={(e) =>
-                    setSortBy(e.target.value as QuestionFilterInput["sortBy"])
-                  }
-                  className="w-full h-9 px-2.5 rounded-md bg-background border border-border text-xs text-foreground"
-                >
-                  <option value="ORIGINAL_NUMBER">Número original</option>
-                  <option value="RECENT">Mais recentes</option>
-                  <option value="DIFFICULTY">Maior dificuldade</option>
-                </select>
-              </div>
-
-              <div>
-                <label
-                  htmlFor="filter-resolution"
-                  className="block text-[11px] font-medium text-muted mb-1"
-                >
-                  Situação de Resolução
-                </label>
-                <select
-                  id="filter-resolution"
-                  value={resolutionFilter}
-                  onChange={(e) =>
-                    setResolutionFilter(
-                      e.target.value as QuestionFilterInput["resolutionFilter"]
-                    )
-                  }
-                  className="w-full h-9 px-2.5 rounded-md bg-background border border-border text-xs text-foreground"
-                >
-                  <option value="ALL">Todas</option>
-                  <option value="UNRESOLVED">Não resolvidas (Inéditas)</option>
-                  <option value="RESOLVED">Já resolvidas</option>
-                </select>
-              </div>
-
-              <div>
-                <label
-                  htmlFor="filter-accuracy"
-                  className="block text-[11px] font-medium text-muted mb-1"
-                >
-                  Desempenho Anterior
-                </label>
-                <select
-                  id="filter-accuracy"
-                  value={accuracyFilter}
-                  onChange={(e) =>
-                    setAccuracyFilter(
-                      e.target.value as QuestionFilterInput["accuracyFilter"]
-                    )
-                  }
-                  className="w-full h-9 px-2.5 rounded-md bg-background border border-border text-xs text-foreground"
-                >
-                  <option value="ALL">Acertadas e erradas</option>
-                  <option value="WRONG">Somente que errei</option>
-                  <option value="CORRECT">Somente que acertei</option>
-                </select>
-              </div>
-
-              <div>
-                <label
-                  htmlFor="filter-position"
-                  className="block text-[11px] font-medium text-muted mb-1"
-                >
-                  Cargo / Exame
-                </label>
-                <select
-                  id="filter-position"
-                  value={positionId}
-                  onChange={(e) => setPositionId(e.target.value)}
-                  className="w-full h-9 px-2.5 rounded-md bg-background border border-border text-xs text-foreground"
-                >
-                  <option value="">Todos os cargos</option>
-                  {catalog.positions.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label
-                  htmlFor="filter-institution"
-                  className="block text-[11px] font-medium text-muted mb-1"
-                >
-                  Instituição / Órgão
-                </label>
-                <select
-                  id="filter-institution"
-                  value={institutionId}
-                  onChange={(e) => setInstitutionId(e.target.value)}
-                  className="w-full h-9 px-2.5 rounded-md bg-background border border-border text-xs text-foreground"
-                >
-                  <option value="">Todas as instituições</option>
-                  {catalog.institutions.map((i) => (
-                    <option key={i.id} value={i.id}>
-                      {i.acronym} — {i.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
+        {/* Seção Completa de Filtros (visível no desktop; recolhível no mobile preservando todas as opções) */}
+        <div
+          id="advanced-filters-panel"
+          className={`${showAdvancedMobile ? "block" : "hidden"} lg:block pt-4 border-t border-border space-y-4`}
+        >
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3">
+            <div>
+              <label
+                htmlFor="filter-board"
+                className="block text-[11px] font-medium text-muted mb-1"
+              >
+                Banca Organizadora
+              </label>
+              <select
+                id="filter-board"
+                name="examBoardId"
+                value={examBoardId}
+                onChange={(e) => setExamBoardId(e.target.value)}
+                className="w-full h-9 px-2.5 rounded-md bg-background border border-border text-xs text-foreground"
+              >
+                <option value="">Todas as bancas</option>
+                {catalog.boards.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.acronym} — {b.name}
+                  </option>
+                ))}
+              </select>
             </div>
 
-            <div className="flex flex-wrap items-center gap-4 text-xs text-muted">
-              <label className="inline-flex items-center gap-1.5 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={onlyBookmarked}
-                  onChange={(e) => setOnlyBookmarked(e.target.checked)}
-                  className="rounded border-border"
-                />
-                <span>Somente favoritas</span>
+            <div>
+              <label
+                htmlFor="filter-position"
+                className="block text-[11px] font-medium text-muted mb-1"
+              >
+                Cargo / Exame
               </label>
-              <label className="inline-flex items-center gap-1.5 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={includeAnnulled}
-                  onChange={(e) => setIncludeAnnulled(e.target.checked)}
-                  className="rounded border-border"
-                />
-                <span>Incluir questões anuladas</span>
+              <select
+                id="filter-position"
+                name="positionId"
+                value={positionId}
+                onChange={(e) => setPositionId(e.target.value)}
+                className="w-full h-9 px-2.5 rounded-md bg-background border border-border text-xs text-foreground"
+              >
+                <option value="">Todos os cargos</option>
+                {catalog.positions.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label
+                htmlFor="filter-institution"
+                className="block text-[11px] font-medium text-muted mb-1"
+              >
+                Instituição / Órgão
               </label>
-              <label className="inline-flex items-center gap-1.5 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={onlyVerifiedExplanations}
-                  onChange={(e) =>
-                    setOnlyVerifiedExplanations(e.target.checked)
-                  }
-                  className="rounded border-border"
-                />
-                <span>Com comentário verificado</span>
+              <select
+                id="filter-institution"
+                name="institutionId"
+                value={institutionId}
+                onChange={(e) => setInstitutionId(e.target.value)}
+                className="w-full h-9 px-2.5 rounded-md bg-background border border-border text-xs text-foreground"
+              >
+                <option value="">Todas as instituições</option>
+                {catalog.institutions.map((i) => (
+                  <option key={i.id} value={i.id}>
+                    {i.acronym} — {i.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label
+                htmlFor="filter-year"
+                className="block text-[11px] font-medium text-muted mb-1"
+              >
+                Ano da Prova
               </label>
+              <select
+                id="filter-year"
+                name="year"
+                value={year}
+                onChange={(e) => setYear(e.target.value)}
+                className="w-full h-9 px-2.5 rounded-md bg-background border border-border text-xs text-foreground"
+              >
+                <option value="">Todos os anos</option>
+                {facets.years.map((y) => (
+                  <option key={y} value={String(y)}>
+                    {y}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label
+                htmlFor="filter-type"
+                className="block text-[11px] font-medium text-muted mb-1"
+              >
+                Modalidade da Questão
+              </label>
+              <select
+                id="filter-type"
+                name="questionType"
+                value={questionType}
+                onChange={(e) => setQuestionType(e.target.value)}
+                className="w-full h-9 px-2.5 rounded-md bg-background border border-border text-xs text-foreground"
+              >
+                <option value="">Todas (Múltipla Escolha &amp; Certo/Errado)</option>
+                <option value="MULTIPLE_CHOICE">Múltipla Escolha (A–E / A–D)</option>
+                <option value="TRUE_FALSE">Certo / Errado (Cebraspe)</option>
+              </select>
+            </div>
+
+            <div>
+              <label
+                htmlFor="filter-resolution"
+                className="block text-[11px] font-medium text-muted mb-1"
+              >
+                Situação de Resolução
+              </label>
+              <select
+                id="filter-resolution"
+                name="resolutionFilter"
+                value={resolutionFilter}
+                onChange={(e) =>
+                  setResolutionFilter(
+                    e.target.value as QuestionFilterInput["resolutionFilter"]
+                  )
+                }
+                className="w-full h-9 px-2.5 rounded-md bg-background border border-border text-xs text-foreground"
+              >
+                <option value="ALL">Todas</option>
+                <option value="UNRESOLVED">Não resolvidas (Inéditas)</option>
+                <option value="RESOLVED">Já resolvidas</option>
+              </select>
+            </div>
+
+            <div>
+              <label
+                htmlFor="filter-accuracy"
+                className="block text-[11px] font-medium text-muted mb-1"
+              >
+                Desempenho Anterior
+              </label>
+              <select
+                id="filter-accuracy"
+                name="accuracyFilter"
+                value={accuracyFilter}
+                onChange={(e) =>
+                  setAccuracyFilter(
+                    e.target.value as QuestionFilterInput["accuracyFilter"]
+                  )
+                }
+                className="w-full h-9 px-2.5 rounded-md bg-background border border-border text-xs text-foreground"
+              >
+                <option value="ALL">Acertadas e erradas</option>
+                <option value="WRONG">Somente questões que errei</option>
+                <option value="CORRECT">Somente questões que acertei</option>
+              </select>
+            </div>
+
+            <div>
+              <label
+                htmlFor="filter-difficulty"
+                className="block text-[11px] font-medium text-muted mb-1"
+              >
+                Dificuldade Estimada
+              </label>
+              <select
+                id="filter-difficulty"
+                name="difficulty"
+                value={difficulty}
+                onChange={(e) => setDifficulty(e.target.value)}
+                className="w-full h-9 px-2.5 rounded-md bg-background border border-border text-xs text-foreground"
+              >
+                <option value="">Qualquer dificuldade</option>
+                <option value="EASY">Fácil</option>
+                <option value="MEDIUM">Média</option>
+                <option value="HARD">Difícil</option>
+              </select>
+            </div>
+
+            <div className="sm:col-span-2 lg:col-span-1 xl:col-span-2">
+              <label
+                htmlFor="filter-sort"
+                className="block text-[11px] font-medium text-muted mb-1"
+              >
+                Ordenar por
+              </label>
+              <select
+                id="filter-sort"
+                name="sortBy"
+                value={sortBy}
+                onChange={(e) =>
+                  setSortBy(e.target.value as QuestionFilterInput["sortBy"])
+                }
+                className="w-full h-9 px-2.5 rounded-md bg-background border border-border text-xs text-foreground"
+              >
+                <option value="ORIGINAL_NUMBER">Número original da prova</option>
+                <option value="RECENT">Mais recentes</option>
+                <option value="DIFFICULTY">Maior dificuldade</option>
+                <option value="REVIEW_PRIORITY">Prioridade de revisão</option>
+              </select>
             </div>
           </div>
-        )}
+
+          <div className="flex flex-wrap items-center gap-4 text-xs text-muted pt-1">
+            <label className="inline-flex items-center gap-1.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={onlyBookmarked}
+                onChange={(e) => setOnlyBookmarked(e.target.checked)}
+                className="rounded border-border"
+              />
+              <span>Somente favoritas</span>
+            </label>
+            <label className="inline-flex items-center gap-1.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={onlyVerifiedExplanations}
+                onChange={(e) =>
+                  setOnlyVerifiedExplanations(e.target.checked)
+                }
+                className="rounded border-border"
+              />
+              <span>Com comentário jurídico verificado</span>
+            </label>
+            <label className="inline-flex items-center gap-1.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={includeAnnulled}
+                onChange={(e) => setIncludeAnnulled(e.target.checked)}
+                className="rounded border-border"
+              />
+              <span>Incluir questões anuladas</span>
+            </label>
+          </div>
+        </div>
       </form>
 
       {/* Chips de Filtros Ativos + Limpar Todos */}

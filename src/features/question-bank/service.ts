@@ -727,6 +727,42 @@ export function buildQuestionSearchWhereClause(params: {
 }
 
 /**
+ * Ordena IDs de questões por prioridade real de revisão:
+ * 1) Itens na fila de repetição espaçada (ReviewQueue PENDING), do mais vencido/próximo para o mais distante
+ * 2) Questões com última tentativa incorreta (ainda não recuperadas)
+ * 3) Demais questões preservando a ordem base (ex.: publishedAt desc)
+ */
+export function sortQuestionIdsByReviewPriority(params: {
+  questionIds: string[];
+  pendingReviews: Array<{ questionId: string; nextReviewAt: Date }>;
+  wrongQuestionIds: Set<string>;
+}): string[] {
+  const reviewRank = new Map<string, number>();
+  const sortedReviews = [...params.pendingReviews].sort(
+    (a, b) => a.nextReviewAt.getTime() - b.nextReviewAt.getTime()
+  );
+  sortedReviews.forEach((r, idx) => {
+    if (!reviewRank.has(r.questionId)) {
+      reviewRank.set(r.questionId, idx);
+    }
+  });
+
+  return [...params.questionIds].sort((a, b) => {
+    const rankA = reviewRank.get(a);
+    const rankB = reviewRank.get(b);
+    if (rankA !== undefined && rankB !== undefined) return rankA - rankB;
+    if (rankA !== undefined) return -1;
+    if (rankB !== undefined) return 1;
+
+    const wrongA = params.wrongQuestionIds.has(a);
+    const wrongB = params.wrongQuestionIds.has(b);
+    if (wrongA && !wrongB) return -1;
+    if (!wrongA && wrongB) return 1;
+    return 0;
+  });
+}
+
+/**
  * Busca questões reais publicadas aplicando todos os filtros combinados e paginação no servidor.
  */
 export async function searchPublishedQuestions(params: {
@@ -785,47 +821,35 @@ export async function searchPublishedQuestions(params: {
 
     const skip = (filters.page - 1) * filters.pageSize;
 
-    const [totalCount, rows] = await Promise.all([
-      prisma.question.count({ where: whereClause }),
-      prisma.question.findMany({
-        where: whereClause,
-        skip,
-        take: filters.pageSize,
-        orderBy:
-          filters.sortBy === "DIFFICULTY"
-            ? { difficulty: "desc" }
-            : { publishedAt: "desc" },
+    const questionInclude = {
+      options: { orderBy: { displayOrder: "asc" as const } },
+      assets: { orderBy: { position: "asc" as const } },
+      subjects: { include: { subject: true } },
+      sources: { include: { sourceDocument: true } },
+      explanations: {
+        where: { status: "VERIFIED" as const },
+        select: { id: true },
+      },
+      bookmarks: {
+        where: { userId },
+        select: { id: true },
+      },
+      attempts: {
+        where: { userId },
+        orderBy: { answeredAt: "desc" as const },
+        take: 5,
+      },
+      examInstances: {
         include: {
-          options: { orderBy: { displayOrder: "asc" } },
-          assets: { orderBy: { position: "asc" } },
-          subjects: { include: { subject: true } },
-          sources: { include: { sourceDocument: true } },
-          explanations: {
-            where: { status: "VERIFIED" },
-            select: { id: true },
-          },
-          bookmarks: {
-            where: { userId },
-            select: { id: true },
-          },
-          attempts: {
-            where: { userId },
-            orderBy: { answeredAt: "desc" },
-            take: 5,
-          },
-          examInstances: {
+          examForm: {
             include: {
-              examForm: {
+              examEdition: {
                 include: {
-                  examEdition: {
+                  examBoard: true,
+                  position: {
                     include: {
-                      examBoard: true,
-                      position: {
-                        include: {
-                          studyTrack: true,
-                          institution: true,
-                        },
-                      },
+                      studyTrack: true,
+                      institution: true,
                     },
                   },
                 },
@@ -833,8 +857,119 @@ export async function searchPublishedQuestions(params: {
             },
           },
         },
-      }),
-    ]);
+      },
+    };
+
+    let totalCount = 0;
+    let rows: Awaited<
+      ReturnType<
+        typeof prisma.question.findMany<{ include: typeof questionInclude }>
+      >
+    > = [];
+
+    if (filters.sortBy === "REVIEW_PRIORITY") {
+      const [matchingRows, pendingReviews, userAttempts] = await Promise.all([
+        prisma.question.findMany({
+          where: whereClause,
+          select: { id: true },
+          orderBy: [{ publishedAt: "desc" }, { id: "asc" }],
+        }),
+        prisma.reviewQueue.findMany({
+          where: { userId, status: "PENDING" },
+          select: { questionId: true, nextReviewAt: true },
+          orderBy: { nextReviewAt: "asc" },
+        }),
+        prisma.questionAttempt.findMany({
+          where: { userId },
+          select: { questionId: true, isCorrect: true },
+          orderBy: { answeredAt: "desc" },
+        }),
+      ]);
+
+      totalCount = matchingRows.length;
+      const latestWrongIds = new Set<string>();
+      const seenAttempt = new Set<string>();
+      for (const att of userAttempts) {
+        if (!seenAttempt.has(att.questionId)) {
+          seenAttempt.add(att.questionId);
+          if (!att.isCorrect) latestWrongIds.add(att.questionId);
+        }
+      }
+
+      const orderedIds = sortQuestionIdsByReviewPriority({
+        questionIds: matchingRows.map((r) => r.id),
+        pendingReviews,
+        wrongQuestionIds: latestWrongIds,
+      });
+      const pageIds = orderedIds.slice(skip, skip + filters.pageSize);
+
+      if (pageIds.length > 0) {
+        const fetched = await prisma.question.findMany({
+          where: { id: { in: pageIds } },
+          include: questionInclude,
+        });
+        const byId = new Map(fetched.map((q) => [q.id, q]));
+        rows = pageIds
+          .map((id) => byId.get(id))
+          .filter((q): q is NonNullable<typeof q> => Boolean(q));
+      }
+    } else if (filters.sortBy === "ORIGINAL_NUMBER") {
+      const matchingRows = await prisma.question.findMany({
+        where: whereClause,
+        select: {
+          id: true,
+          examInstances: {
+            select: {
+              originalNumber: true,
+              examForm: {
+                select: { examEdition: { select: { year: true } } },
+              },
+            },
+            take: 1,
+          },
+        },
+      });
+
+      totalCount = matchingRows.length;
+      const sortedIds = [...matchingRows]
+        .sort((a, b) => {
+          const yearA = a.examInstances[0]?.examForm.examEdition.year ?? 0;
+          const yearB = b.examInstances[0]?.examForm.examEdition.year ?? 0;
+          if (yearB !== yearA) return yearB - yearA;
+          const numA = a.examInstances[0]?.originalNumber ?? 9999;
+          const numB = b.examInstances[0]?.originalNumber ?? 9999;
+          return numA - numB;
+        })
+        .map((r) => r.id);
+
+      const pageIds = sortedIds.slice(skip, skip + filters.pageSize);
+      if (pageIds.length > 0) {
+        const fetched = await prisma.question.findMany({
+          where: { id: { in: pageIds } },
+          include: questionInclude,
+        });
+        const byId = new Map(fetched.map((q) => [q.id, q]));
+        rows = pageIds
+          .map((id) => byId.get(id))
+          .filter((q): q is NonNullable<typeof q> => Boolean(q));
+      }
+    } else {
+      const [count, fetched] = await Promise.all([
+        prisma.question.count({ where: whereClause }),
+        prisma.question.findMany({
+          where: whereClause,
+          skip,
+          take: filters.pageSize,
+          orderBy:
+            filters.sortBy === "DIFFICULTY"
+              ? [{ difficulty: "desc" }, { publishedAt: "desc" }]
+              : [{ publishedAt: "desc" }, { id: "asc" }],
+          include: questionInclude,
+        }),
+      ]);
+      totalCount = count;
+      rows = fetched;
+    }
 
     const items: QuestionBankListItem[] = rows
       .map((q) => {
