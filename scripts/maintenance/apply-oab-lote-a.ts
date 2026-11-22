@@ -1,20 +1,137 @@
 import dotenv from "dotenv";
 dotenv.config({ path: [".env.local", ".env"] });
 
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { prisma } from "../../src/lib/db/prisma";
 
 /**
- * SANEAMENTO CONTROLADO — OAB LOTE A (65 FALSOS POSITIVOS EM DIREITO ELEITORAL).
+ * SANEAMENTO CONTROLADO — OAB LOTE A (FALSOS POSITIVOS EM DIREITO ELEITORAL).
  *
- * - Modo padrão: --dry-run (executa simulação transacional REAL no Prisma Postgres,
- *   valida contagens antes/depois e ausência de duplicidades, e faz ROLLBACK forçado
- *   ao final — ZERO alterações persistidas!).
- * - Gera o artefato detalhado `previa-lote-a-oab-eleitoral.md` com todas as 65 questões,
- *   evidências textuais e sinalização de eventuais ambiguidades.
- * - Somente persiste alterações se chamado explicitamente com `--apply` após aprovação.
+ * Regras de segurança obrigatórias:
+ * 1. Separa estritamente `cleanCandidates` (53 sem ambiguidade) de `ambiguousItems` (12 bloqueadas).
+ * 2. Nunca considera ausência de empate de escore como aprovação humana.
+ * 3. `--apply` exige explicitamente `--approved-ids-file=<caminho.json>` com IDs aprovados e checksum.
+ * 4. Recusa a execução se qualquer ID for ambíguo, se a contagem/lista divergir da prévia aprovada
+ *    ou se a disciplina atual no banco tiver mudado desde a auditoria.
+ * 5. Remove exclusivamente o vínculo incorreto `oab-direito-eleitoral`, preservando outros vínculos válidos.
+ * 6. Modo padrão (`--dry-run`): simula transação real e executa ROLLBACK forçado (0 alterações persistidas).
  */
+
+export interface LoteACandidate {
+  questionId: string;
+  editionCode: string;
+  qNum: number;
+  currentSlug: string;
+  proposedSlug: string;
+  targetSubjectId: string;
+  evidence: string;
+  confidence: string;
+  isAmbiguous: boolean;
+  ambiguityNote: string | null;
+  excerpt: string;
+}
+
+export interface ApprovedLoteAManifest {
+  batch: "OAB_LOTE_A";
+  approvedByHuman: boolean;
+  expectedCount: number;
+  approvedQuestionIds: string[];
+  checksumSha256: string;
+}
+
+export function computeApprovedIdsChecksum(ids: string[]): string {
+  return crypto
+    .createHash("sha256")
+    .update(JSON.stringify([...ids].sort()), "utf-8")
+    .digest("hex");
+}
+
+export function partitionLoteACandidates(candidates: LoteACandidate[]): {
+  cleanCandidates: LoteACandidate[];
+  ambiguousItems: LoteACandidate[];
+} {
+  const cleanCandidates: LoteACandidate[] = [];
+  const ambiguousItems: LoteACandidate[] = [];
+  for (const c of candidates) {
+    if (c.isAmbiguous) ambiguousItems.push(c);
+    else cleanCandidates.push(c);
+  }
+  return { cleanCandidates, ambiguousItems };
+}
+
+export function validateApprovedLoteASelection(params: {
+  cleanCandidates: LoteACandidate[];
+  ambiguousItems: LoteACandidate[];
+  manifest: ApprovedLoteAManifest;
+  liveEleitoralQuestionIds: Set<string>;
+}): { valid: boolean; errors: string[]; approvedItems: LoteACandidate[] } {
+  const { cleanCandidates, ambiguousItems, manifest, liveEleitoralQuestionIds } = params;
+  const errors: string[] = [];
+
+  if (!manifest.approvedByHuman) {
+    errors.push("Manifesto de aprovação não possui `approvedByHuman: true`.");
+  }
+
+  const expectedChecksum = computeApprovedIdsChecksum(manifest.approvedQuestionIds);
+  if (expectedChecksum !== manifest.checksumSha256) {
+    errors.push("Checksum SHA-256 do manifesto de IDs aprovados é inválido.");
+  }
+
+  if (manifest.approvedQuestionIds.length !== manifest.expectedCount) {
+    errors.push(
+      `Contagem divergente no manifesto: expectedCount=${manifest.expectedCount}, ids=${manifest.approvedQuestionIds.length}.`
+    );
+  }
+
+  const ambiguousIdSet = new Set(ambiguousItems.map((i) => i.questionId));
+  const cleanById = new Map(cleanCandidates.map((i) => [i.questionId, i]));
+  const seen = new Set<string>();
+  const approvedItems: LoteACandidate[] = [];
+
+  for (const id of manifest.approvedQuestionIds) {
+    if (seen.has(id)) {
+      errors.push(`ID duplicado no manifesto: ${id}`);
+      continue;
+    }
+    seen.add(id);
+
+    if (ambiguousIdSet.has(id)) {
+      errors.push(
+        `ID ${id} pertence ao conjunto de 12 questões ambíguas bloqueadas e não pode ser aplicado em lote.`
+      );
+      continue;
+    }
+
+    const candidate = cleanById.get(id);
+    if (!candidate) {
+      errors.push(`ID ${id} não corresponde a nenhum item da prévia aprovada do Lote A.`);
+      continue;
+    }
+
+    if (!liveEleitoralQuestionIds.has(id)) {
+      errors.push(
+        `Revalidação falhou: questão ${id} (${candidate.editionCode} #${candidate.qNum}) não está mais vinculada a oab-direito-eleitoral no banco.`
+      );
+      continue;
+    }
+
+    approvedItems.push(candidate);
+  }
+
+  if (approvedItems.length !== cleanCandidates.length && errors.length === 0) {
+    errors.push(
+      `Seleção diverge da prévia limpa completa (${approvedItems.length} aprovados vs ${cleanCandidates.length} na prévia).`
+    );
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+    approvedItems,
+  };
+}
 
 const STRICT_RULES: Array<{ slug: string; name: string; patterns: RegExp[] }> = [
   {
@@ -250,8 +367,10 @@ class DryRunRollbackSentinel extends Error {
   }
 }
 
-async function main(): Promise<void> {
+async function runCli(): Promise<void> {
   const apply = process.argv.includes("--apply");
+  const approvedFileArg = process.argv.find((a) => a.startsWith("--approved-ids-file="));
+  const approvedFilePath = approvedFileArg?.split("=").slice(1).join("=");
 
   const [eleitoralSubj, allSubjects] = await Promise.all([
     prisma.subject.findUnique({ where: { slug: "oab-direito-eleitoral" } }),
@@ -283,21 +402,7 @@ async function main(): Promise<void> {
     ],
   });
 
-  type LoteAItem = {
-    questionId: string;
-    editionCode: string;
-    qNum: number;
-    currentSlug: string;
-    proposedSlug: string;
-    targetSubjectId: string;
-    evidence: string;
-    confidence: string;
-    isAmbiguous: boolean;
-    ambiguityNote: string | null;
-    excerpt: string;
-  };
-
-  const loteA: LoteAItem[] = [];
+  const allCandidates: LoteACandidate[] = [];
   for (const inst of instances) {
     const edCode = inst.examForm.examEdition.editionCode;
     const examNum = Number(edCode.match(/OAB-(\d+)/)?.[1] ?? 41);
@@ -313,16 +418,14 @@ async function main(): Promise<void> {
       (best.slug === fgvBlock || best.score >= 3);
 
     if (!qualifies) continue;
-
     const targetSubj = subjBySlug.get(best.slug);
     if (!targetSubj) continue;
 
-    // Detectar qualquer potencial ambiguidade (ex.: 2ª disciplina empatada ou texto diverge do bloco FGV)
     const isTieOrDivergentBlock =
       Boolean(second && second.score === best.score) ||
       (best.slug !== fgvBlock && best.score < 4);
 
-    loteA.push({
+    allCandidates.push({
       questionId: inst.question.id,
       editionCode: edCode,
       qNum: inst.originalNumber,
@@ -337,36 +440,87 @@ async function main(): Promise<void> {
       isAmbiguous: isTieOrDivergentBlock,
       ambiguityNote:
         second && second.score === best.score
-          ? `Empate de escore com ${second.slug} (${second.matches[0]}) — recomenda-se conferência`
+          ? `Empate de escore com ${second.slug} (${second.matches[0]}) — bloqueada para revisão humana`
           : best.slug !== fgvBlock
-            ? `Texto aponta ${best.slug}, mas posição #${inst.originalNumber} está no bloco típico de ${fgvBlock}`
+            ? `Texto aponta ${best.slug}, mas posição #${inst.originalNumber} está no bloco típico de ${fgvBlock} — bloqueada para revisão humana`
             : null,
       excerpt: inst.question.statement.replace(/\s+/g, " ").trim().slice(0, 140),
     });
   }
 
-  // Gerar artefato da prévia detalhada das 65 questões do Lote A
-  const ambiguousItems = loteA.filter((i) => i.isAmbiguous);
+  const { cleanCandidates, ambiguousItems } = partitionLoteACandidates(allCandidates);
+
+  // Gerar artefato definitivo das 53 questões limpas + 12 bloqueadas separadas
   const lines: string[] = [];
-  lines.push("# Prévia Auditada — OAB Lote A (65 Falsos Positivos em Direito Eleitoral)");
+  lines.push("# Prévia Definitiva — OAB Lote A (53 Itens Limpos + 12 Ambíguos Bloqueados)");
   lines.push("");
   lines.push("> [!IMPORTANT]");
-  lines.push(`> **Modo executado:** \`${apply ? "--apply" : "--dry-run (simulação transacional com rollback automático)"}\`. Total no Lote A: **${loteA.length}** questões (**${loteA.length - ambiguousItems.length}** inequívocas + **${ambiguousItems.length}** sinalizadas com observação de ambiguidade para conferência).`);
+  lines.push(`> **Separação estrita aplicada:** apenas os **${cleanCandidates.length}** itens abaixo compõem a prévia elegível para aprovação explícita. Os **${ambiguousItems.length}** itens ambíguos estão tecnicamente bloqueados no código e **nunca** entram no conjunto aplicado em lote.`);
   lines.push("");
-  lines.push("| # | Edição | Q# | Atual | Proposta | Confiança | Ambiguidade | Evidência Textual | Trecho Real |");
-  lines.push("|---:|---|---:|---|---|---|---|---|---|");
-  loteA.forEach((it, idx) => {
+  lines.push(`## 1. Conjunto Elegível para Aprovação Final (${cleanCandidates.length} questões)`);
+  lines.push("");
+  lines.push("| # | Edição | Q# | Question ID | Atual | Proposta | Evidência Textual | Trecho Real |");
+  lines.push("|---:|---|---:|---|---|---|---|---|");
+  cleanCandidates.forEach((it, idx) => {
     lines.push(
-      `| ${idx + 1} | \`${it.editionCode}\` | #${it.qNum} | \`${it.currentSlug}\` | \`${it.proposedSlug}\` | ${it.confidence} | ${it.isAmbiguous ? `⚠️ ${it.ambiguityNote}` : "✅ Sem ambiguidade"} | ${it.evidence.replace(/\|/g, "\\|")} | ${it.excerpt.replace(/\|/g, "\\|")}... |`
+      `| ${idx + 1} | \`${it.editionCode}\` | #${it.qNum} | \`${it.questionId}\` | \`${it.currentSlug}\` | \`${it.proposedSlug}\` | ${it.evidence.replace(/\|/g, "\\|")} | ${it.excerpt.replace(/\|/g, "\\|")}... |`
+    );
+  });
+  lines.push("");
+  lines.push(`## 2. Itens Ambíguos Explicitamente Bloqueados (${ambiguousItems.length} questões — NÃO entram no --apply)`);
+  lines.push("");
+  lines.push("| # | Edição | Q# | Question ID | Proposta Sugerida | Motivo do Bloqueio |");
+  lines.push("|---:|---|---:|---|---|---|");
+  ambiguousItems.forEach((it, idx) => {
+    lines.push(
+      `| ${idx + 1} | \`${it.editionCode}\` | #${it.qNum} | \`${it.questionId}\` | \`${it.proposedSlug}\` | ${(it.ambiguityNote ?? "Ambíguo").replace(/\|/g, "\\|")} |`
     );
   });
 
   const previewPath = path.resolve(
-    "C:/Users/yurib/.gemini/antigravity/brain/60106d52-50c2-4fb5-8897-6647544e2a45/previa-lote-a-oab-eleitoral.md"
+    "C:/Users/yurib/.gemini/antigravity/brain/60106d52-50c2-4fb5-8897-6647544e2a45/previa-definitiva-lote-a-53-oab.md"
   );
   fs.writeFileSync(previewPath, lines.join("\n"), "utf-8");
 
-  // Simulação transacional REAL no Prisma Postgres (com rollback forçado em dry-run!)
+  // Salvar template de manifesto pendente (approvedByHuman: false!) no diretório privado de backups
+  const pendingManifestPath =
+    "C:\\Users\\yurib\\OneDrive\\Desktop\\plataforma-estudos-backups-privados\\lote-a-53-manifesto-pendente.json";
+  const pendingIds = cleanCandidates.map((c) => c.questionId);
+  const pendingManifest: ApprovedLoteAManifest = {
+    batch: "OAB_LOTE_A",
+    approvedByHuman: false,
+    expectedCount: pendingIds.length,
+    approvedQuestionIds: pendingIds,
+    checksumSha256: computeApprovedIdsChecksum(pendingIds),
+  };
+  fs.mkdirSync(path.dirname(pendingManifestPath), { recursive: true });
+  fs.writeFileSync(pendingManifestPath, JSON.stringify(pendingManifest, null, 2), "utf-8");
+
+  const liveEleitoralIds = new Set(instances.map((i) => i.question.id));
+
+  // Se --apply foi solicitado, exigir manifesto aprovado e validar estritamente antes da transação
+  let itemsToProcess: LoteACandidate[] = cleanCandidates;
+  if (apply) {
+    if (!approvedFilePath || !fs.existsSync(approvedFilePath)) {
+      throw new Error(
+        "RECUSADO: --apply exige `--approved-ids-file=<manifesto.json>` explicitamente aprovado por humano."
+      );
+    }
+    const manifest = JSON.parse(
+      fs.readFileSync(approvedFilePath, "utf-8")
+    ) as ApprovedLoteAManifest;
+    const validation = validateApprovedLoteASelection({
+      cleanCandidates,
+      ambiguousItems,
+      manifest,
+      liveEleitoralQuestionIds: liveEleitoralIds,
+    });
+    if (!validation.valid) {
+      throw new Error(`RECUSADO NA REVALIDAÇÃO:\n- ${validation.errors.join("\n- ")}`);
+    }
+    itemsToProcess = validation.approvedItems;
+  }
+
   const eleitoralBefore = await prisma.questionSubject.count({
     where: { subjectId: eleitoralSubj.id },
   });
@@ -374,15 +528,31 @@ async function main(): Promise<void> {
   try {
     await prisma.$transaction(
       async (tx) => {
-        const loteAQuestionIds = loteA.map((i) => i.questionId);
+        const targetIds = itemsToProcess.map((i) => i.questionId);
+
+        // Revalidar dentro da transação que todos os IDs continuam vinculados a oab-direito-eleitoral
+        const liveLinksInTx = await tx.questionSubject.findMany({
+          where: {
+            questionId: { in: targetIds },
+            subjectId: eleitoralSubj.id,
+          },
+          select: { questionId: true },
+        });
+        if (liveLinksInTx.length !== targetIds.length) {
+          throw new Error(
+            `Abortado na transação: esperado ${targetIds.length} vínculos ativos em oab-direito-eleitoral, encontrado ${liveLinksInTx.length}.`
+          );
+        }
+
+        // Remove EXCLUSIVAMENTE o vínculo incorreto oab-direito-eleitoral (preserva quaisquer outros vínculos válidos)
         await tx.questionSubject.deleteMany({
           where: {
-            questionId: { in: loteAQuestionIds },
+            questionId: { in: targetIds },
             subjectId: eleitoralSubj.id,
           },
         });
         await tx.questionSubject.createMany({
-          data: loteA.map((item) => ({
+          data: itemsToProcess.map((item) => ({
             questionId: item.questionId,
             subjectId: item.targetSubjectId,
             isPrimary: true,
@@ -407,20 +577,21 @@ async function main(): Promise<void> {
             },
           },
         });
+
         const summary = {
           mode: apply ? "APPLIED" : "DRY_RUN_ROLLED_BACK",
-          loteACount: loteA.length,
-          ambiguousCount: ambiguousItems.length,
+          cleanEligibleCount: cleanCandidates.length,
+          ambiguousBlockedCount: ambiguousItems.length,
+          processedInTxCount: itemsToProcess.length,
           eleitoralBefore,
           eleitoralAfterInTx: eleitoralAfter,
           oabPublishedPreserved: oabPublishedAfter,
           previewPath,
+          pendingManifestPath,
         };
 
-        if (!apply) {
-          throw new DryRunRollbackSentinel(summary);
-        }
-        console.info("=== LOTE A APLICADO ===", summary);
+        if (!apply) throw new DryRunRollbackSentinel(summary);
+        console.info("=== LOTE A APLICADO COM APROVAÇÃO EXPLICITA ===", summary);
       },
       { timeout: 30000 }
     );
@@ -429,7 +600,7 @@ async function main(): Promise<void> {
       const eleitoralPostRollback = await prisma.questionSubject.count({
         where: { subjectId: eleitoralSubj.id },
       });
-      console.info("=== SIMULAÇÃO TRANSACIONAL LOTE A (ROLLBACK CONFIRMADO) ===");
+      console.info("=== SIMULAÇÃO TRANSACIONAL LOTE A (53 LIMPOS / 12 BLOQUEADOS — ROLLBACK OK) ===");
       console.info({
         ...err.summary,
         eleitoralPostRollback,
@@ -441,11 +612,13 @@ async function main(): Promise<void> {
   }
 }
 
-main()
-  .catch((err) => {
-    console.error(err);
-    process.exit(1);
-  })
-  .finally(async () => {
-    await prisma.$disconnect();
-  });
+if (require.main === module) {
+  runCli()
+    .catch((err) => {
+      console.error(err);
+      process.exit(1);
+    })
+    .finally(async () => {
+      await prisma.$disconnect();
+    });
+}

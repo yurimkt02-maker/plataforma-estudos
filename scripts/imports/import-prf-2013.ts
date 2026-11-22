@@ -7,6 +7,7 @@ import { prisma } from "../../src/lib/db/prisma";
 import {
   auditExamCompleteness,
   enforceImportPublicationPolicy,
+  resolveIdempotentQuestionWrite,
   validateExtractedQuestionItem,
 } from "../../src/features/imports/pipeline";
 
@@ -51,7 +52,6 @@ async function ensurePrf2013Subjects(): Promise<void> {
   });
   const rootBySlug = new Map(roots.map((r) => [r.slug, r]));
 
-  // Garantir raiz de Física Aplicada à PRF
   const fisicaRoot = await prisma.subject.upsert({
     where: { slug: "fisica" },
     update: {},
@@ -107,6 +107,8 @@ async function ensurePrf2013Subjects(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  const dryRun = process.argv.includes("--dry-run");
+
   const jsonPath = path.join(
     process.cwd(),
     "acervo",
@@ -117,13 +119,100 @@ async function main(): Promise<void> {
     await fs.readFile(jsonPath, "utf-8")
   ) as ExtractedPrf2013Payload;
 
-  await ensurePrf2013Subjects();
+  if (!dryRun) {
+    await ensurePrf2013Subjects();
+  }
 
   const prfRef = await prisma.examEdition.findUnique({
     where: { editionCode: "PRF-2021-POLICIAL" },
   });
   if (!prfRef) {
     throw new Error("Edição de referência PRF-2021-POLICIAL não encontrada.");
+  }
+
+  const existingEdition = await prisma.examEdition.findUnique({
+    where: { editionCode: payload.editionCode },
+    include: { examForms: true },
+  });
+
+  if (dryRun && existingEdition) {
+    // Simular reexecução idempotente sem qualquer escrita no banco
+    const existingQuestions = await prisma.question.findMany({
+      where: {
+        examInstances: {
+          some: { examForm: { examEditionId: existingEdition.id } },
+        },
+      },
+      include: { _count: { select: { assets: true } } },
+    });
+    const byHash = new Map(existingQuestions.map((q) => [q.canonicalHash, q]));
+    const formLabel = existingEdition.examForms[0]?.versionLabel ?? payload.versionLabel;
+
+    let wouldCreate = 0;
+    let wouldPreservePublished = 0;
+    let wouldUpdatePending = 0;
+    let wouldReject = 0;
+
+    for (const item of payload.extractedItems) {
+      const validation = validateExtractedQuestionItem({
+        originalNumber: item.originalNumber,
+        questionType: item.questionType,
+        statement: item.statement,
+        supportText: item.supportText ?? undefined,
+        options: item.options,
+        officialAnswer: item.officialAnswer,
+        isAnnulled: item.isAnnulled,
+        subjectSlug: item.subjectSlug,
+        pageNumber: item.pageNumber,
+        pageImages: item.pageImages,
+        requiresHumanReview: item.requiresHumanReview,
+        reviewReason: item.reviewReason,
+        sourceDocumentSha256: payload.examPdfSha256,
+        examFormVersionLabel: formLabel,
+      });
+
+      const policy = enforceImportPublicationPolicy({
+        validation,
+        hasVerifiedHumanReview: false,
+        examDocumentVerified: true,
+        answerKeyDocumentVerified: true,
+      });
+
+      const ex = byHash.get(validation.canonicalHash);
+      const plan = resolveIdempotentQuestionWrite({
+        existing: ex
+          ? {
+              id: ex.id,
+              status: ex.status,
+              statement: ex.statement,
+              supportText: ex.supportText,
+              validatedAt: ex.validatedAt,
+              publishedAt: ex.publishedAt,
+              assetsCount: ex._count.assets,
+            }
+          : null,
+        incomingStatement: item.statement,
+        incomingSupportText: item.supportText ?? null,
+        policy,
+      });
+
+      if (!validation.isValid) wouldReject++;
+      else if (plan.action === "CREATE") wouldCreate++;
+      else if (plan.action === "PRESERVE_EXISTING") wouldPreservePublished++;
+      else wouldUpdatePending++;
+    }
+
+    console.info("=== SIMULAÇÃO IDEMPOTENTE DE REEXECUÇÃO PRF 2013 (DRY-RUN) ===");
+    console.info({
+      editionCode: payload.editionCode,
+      totalItems: payload.extractedItems.length,
+      wouldCreate,
+      wouldPreservePublished,
+      wouldUpdatePending,
+      wouldReject,
+      zeroPublishedDowngraded: wouldPreservePublished === existingQuestions.filter((q) => q.status === "PUBLISHED").length,
+    });
+    return;
   }
 
   const edition = await prisma.examEdition.upsert({
@@ -217,35 +306,34 @@ async function main(): Promise<void> {
     items: payload.extractedItems,
   });
 
-  const job = await prisma.importJob.upsert({
+  const existingJob = await prisma.importJob.findUnique({
     where: { idempotencyKey: payload.idempotencyKey },
-    update: {
-      status: "EXTRACTING",
-      currentStage: "VALIDATING",
-      totalDetected: payload.extractedItems.length,
-    },
-    create: {
-      examEditionId: edition.id,
-      examFormId: form.id,
-      examPdfDocumentId: examDoc.id,
-      answerKeyDocumentId: keyDoc.id,
-      status: "EXTRACTING",
-      currentStage: "VALIDATING",
-      totalDetected: payload.extractedItems.length,
-      idempotencyKey: payload.idempotencyKey,
-      startedAt: new Date(),
-    },
   });
+
+  const job =
+    existingJob ??
+    (await prisma.importJob.create({
+      data: {
+        examEditionId: edition.id,
+        examFormId: form.id,
+        examPdfDocumentId: examDoc.id,
+        answerKeyDocumentId: keyDoc.id,
+        status: "EXTRACTING",
+        currentStage: "VALIDATING",
+        totalDetected: payload.extractedItems.length,
+        idempotencyKey: payload.idempotencyKey,
+        startedAt: new Date(),
+      },
+    }));
 
   const subjectsBySlug = new Map(
     (await prisma.subject.findMany()).map((s) => [s.slug, s])
   );
 
-  let publishedCount = 0;
-  let awaitingReviewCount = 0;
+  let createdCount = 0;
+  let preservedPublishedCount = 0;
+  let updatedPendingCount = 0;
   let rejectedCount = 0;
-  let duplicateHashes = 0;
-  const seenHashes = new Set<string>();
 
   for (const item of payload.extractedItems) {
     const validation = validateExtractedQuestionItem({
@@ -265,38 +353,11 @@ async function main(): Promise<void> {
       examFormVersionLabel: form.versionLabel,
     });
 
-    if (seenHashes.has(validation.canonicalHash)) {
-      duplicateHashes++;
-    }
-    seenHashes.add(validation.canonicalHash);
-
     if (!validation.isValid) {
       rejectedCount++;
-      await prisma.importJobItem.upsert({
-        where: {
-          importJobId_originalNumber: {
-            importJobId: job.id,
-            originalNumber: item.originalNumber,
-          },
-        },
-        update: {
-          validationStatus: "REJECTED",
-          validationErrorsJson: validation.issues,
-        },
-        create: {
-          importJobId: job.id,
-          originalNumber: item.originalNumber,
-          rawExtractedText: item.statement,
-          structuredPayloadJson: item,
-          detectedAnswerKey: item.officialAnswer,
-          validationStatus: "REJECTED",
-          validationErrorsJson: validation.issues,
-        },
-      });
       continue;
     }
 
-    // Regra unificada: scripts nunca publicam automaticamente sem revisão humana efetiva.
     const pubPolicy = enforceImportPublicationPolicy({
       validation,
       hasVerifiedHumanReview: false,
@@ -304,41 +365,74 @@ async function main(): Promise<void> {
       answerKeyDocumentVerified: keyDoc.verificationStatus === "VERIFIED",
     });
 
-    const qStatus =
-      pubPolicy.targetQuestionStatus === "PUBLISHED"
-        ? "PUBLISHED"
-        : "AWAITING_REVIEW";
-
-    const question = await prisma.question.upsert({
+    const existing = await prisma.question.findUnique({
       where: { canonicalHash: validation.canonicalHash },
-      update: {
-        statement: item.statement,
-        supportText: item.supportText ?? null,
-        status: qStatus,
-        validatedAt: qStatus === "PUBLISHED" ? new Date() : null,
-        publishedAt: qStatus === "PUBLISHED" ? new Date() : null,
-      },
-      create: {
-        questionType: item.questionType,
-        statement: item.statement,
-        supportText: item.supportText ?? null,
-        status: qStatus,
-        difficulty: "MEDIUM",
-        canonicalHash: validation.canonicalHash,
-        validatedAt: qStatus === "PUBLISHED" ? new Date() : null,
-        publishedAt: qStatus === "PUBLISHED" ? new Date() : null,
-      },
+      include: { _count: { select: { assets: true } } },
     });
+
+    const writePlan = resolveIdempotentQuestionWrite({
+      existing: existing
+        ? {
+            id: existing.id,
+            status: existing.status,
+            statement: existing.statement,
+            supportText: existing.supportText,
+            validatedAt: existing.validatedAt,
+            publishedAt: existing.publishedAt,
+            assetsCount: existing._count.assets,
+          }
+        : null,
+      incomingStatement: item.statement,
+      incomingSupportText: item.supportText ?? null,
+      policy: pubPolicy,
+    });
+
+    // Registros históricos já PUBLISHED nunca são rebaixados nem sobrescritos em reexecução
+    if (writePlan.action === "PRESERVE_EXISTING") {
+      preservedPublishedCount++;
+      continue;
+    }
+
+    let questionId: string;
+    if (writePlan.action === "CREATE") {
+      const created = await prisma.question.create({
+        data: {
+          questionType: item.questionType,
+          statement: writePlan.statement,
+          supportText: writePlan.supportText,
+          status: writePlan.status,
+          difficulty: "MEDIUM",
+          canonicalHash: validation.canonicalHash,
+          validatedAt: writePlan.validatedAt,
+          publishedAt: writePlan.publishedAt,
+        },
+      });
+      questionId = created.id;
+      createdCount++;
+    } else {
+      const updated = await prisma.question.update({
+        where: { id: existing!.id },
+        data: {
+          statement: writePlan.statement,
+          supportText: writePlan.supportText,
+          status: writePlan.status,
+          validatedAt: writePlan.validatedAt,
+          publishedAt: writePlan.publishedAt,
+        },
+      });
+      questionId = updated.id;
+      updatedPendingCount++;
+    }
 
     for (let i = 0; i < item.options.length; i++) {
       const opt = item.options[i]!;
       await prisma.questionOption.upsert({
         where: {
-          questionId_label: { questionId: question.id, label: opt.label },
+          questionId_label: { questionId, label: opt.label },
         },
         update: { content: opt.content, displayOrder: i + 1 },
         create: {
-          questionId: question.id,
+          questionId,
           label: opt.label,
           content: opt.content,
           displayOrder: i + 1,
@@ -349,7 +443,7 @@ async function main(): Promise<void> {
     await prisma.questionSource.upsert({
       where: {
         questionId_sourceDocumentId: {
-          questionId: question.id,
+          questionId,
           sourceDocumentId: examDoc.id,
         },
       },
@@ -359,7 +453,7 @@ async function main(): Promise<void> {
         extractedSnippetHash: validation.canonicalHash,
       },
       create: {
-        questionId: question.id,
+        questionId,
         sourceDocumentId: examDoc.id,
         pageNumber: item.pageNumber,
         sourceReference: `${payload.editionCode} — ${form.versionLabel} — Questão #${item.originalNumber} (Pág. ${item.pageNumber})`,
@@ -371,32 +465,18 @@ async function main(): Promise<void> {
     if (subject) {
       await prisma.questionSubject.upsert({
         where: {
-          questionId_subjectId: {
-            questionId: question.id,
-            subjectId: subject.id,
-          },
+          questionId_subjectId: { questionId, subjectId: subject.id },
         },
         update: { isPrimary: true },
-        create: {
-          questionId: question.id,
-          subjectId: subject.id,
-          isPrimary: true,
-        },
+        create: { questionId, subjectId: subject.id, isPrimary: true },
       });
       if (subject.parentId) {
         await prisma.questionSubject.upsert({
           where: {
-            questionId_subjectId: {
-              questionId: question.id,
-              subjectId: subject.parentId,
-            },
+            questionId_subjectId: { questionId, subjectId: subject.parentId },
           },
           update: { isPrimary: false },
-          create: {
-            questionId: question.id,
-            subjectId: subject.parentId,
-            isPrimary: false,
-          },
+          create: { questionId, subjectId: subject.parentId, isPrimary: false },
         });
       }
     }
@@ -409,7 +489,7 @@ async function main(): Promise<void> {
         },
       },
       update: {
-        questionId: question.id,
+        questionId,
         isAnnulled: item.isAnnulled,
         annulmentReason: item.isAnnulled
           ? "Item oficialmente anulado (X) no Gabarito Oficial Definitivo CESPE/UnB (DPRF13_001_01)."
@@ -417,7 +497,7 @@ async function main(): Promise<void> {
       },
       create: {
         examFormId: form.id,
-        questionId: question.id,
+        questionId,
         originalNumber: item.originalNumber,
         displayOrder: item.originalNumber,
         isAnnulled: item.isAnnulled,
@@ -449,72 +529,42 @@ async function main(): Promise<void> {
         revisionNumber: 1,
       },
     });
-
-    await prisma.importJobItem.upsert({
-      where: {
-        importJobId_originalNumber: {
-          importJobId: job.id,
-          originalNumber: item.originalNumber,
-        },
-      },
-      update: {
-        questionId: question.id,
-        detectedAnswerKey: item.officialAnswer,
-        validationStatus: qStatus === "PUBLISHED" ? "VERIFIED" : "PENDING",
-        validationErrorsJson: validation.issues,
-      },
-      create: {
-        importJobId: job.id,
-        originalNumber: item.originalNumber,
-        rawExtractedText: item.statement,
-        structuredPayloadJson: item,
-        detectedAnswerKey: item.officialAnswer,
-        questionId: question.id,
-        validationStatus: qStatus === "PUBLISHED" ? "VERIFIED" : "PENDING",
-        validationErrorsJson: validation.issues,
-      },
-    });
-
-    if (qStatus === "PUBLISHED") publishedCount++;
-    else awaitingReviewCount++;
   }
 
-  await prisma.importJob.update({
-    where: { id: job.id },
-    data: {
-      status: awaitingReviewCount > 0 ? "AWAITING_REVIEW" : "PUBLISHED",
-      currentStage: "PUBLISHED",
-      totalStructured: payload.extractedItems.length,
-      totalValidated: publishedCount + awaitingReviewCount,
-      totalPublished: publishedCount,
-      finishedAt: new Date(),
-    },
-  });
+  // Só atualiza status do ImportJob se ele ainda não estiver PUBLISHED
+  if (!existingJob || existingJob.status !== "PUBLISHED") {
+    await prisma.importJob.update({
+      where: { id: job.id },
+      data: {
+        status: "AWAITING_REVIEW",
+        currentStage: "AWAITING_REVIEW",
+        totalStructured: payload.extractedItems.length,
+        totalValidated: createdCount + updatedPendingCount + preservedPublishedCount,
+        totalPublished: preservedPublishedCount,
+        finishedAt: new Date(),
+      },
+    });
+  }
 
-  const totalPublishedNow = await prisma.question.count({
-    where: { status: "PUBLISHED" },
-  });
-
-  console.info("=== IMPORTAÇÃO PRF 2013 CONCLUÍDA ===");
+  console.info("=== IMPORTAÇÃO IDEMPOTENTE PRF 2013 CONCLUÍDA ===");
   console.info({
     editionCode: payload.editionCode,
     jobId: job.id,
-    detected: payload.extractedItems.length,
     completenessPercent: completeness.completenessPercent,
-    published: publishedCount,
-    awaitingReview: awaitingReviewCount,
-    rejected: rejectedCount,
-    annulledNumbers: payload.annulledNumbers,
-    duplicateHashes,
-    totalPublishedInDatabaseNow: totalPublishedNow,
+    createdCount,
+    preservedPublishedCount,
+    updatedPendingCount,
+    rejectedCount,
   });
 }
 
-main()
-  .catch((err) => {
-    console.error(err);
-    process.exit(1);
-  })
-  .finally(async () => {
-    await prisma.$disconnect();
-  });
+if (require.main === module) {
+  main()
+    .catch((err) => {
+      console.error(err);
+      process.exit(1);
+    })
+    .finally(async () => {
+      await prisma.$disconnect();
+    });
+}

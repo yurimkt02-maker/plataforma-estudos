@@ -282,6 +282,100 @@ export function enforceImportPublicationPolicy(params: {
   };
 }
 
+export type ExistingQuestionSnapshot = {
+  id: string;
+  status: "DRAFT" | "AWAITING_REVIEW" | "APPROVED" | "PUBLISHED" | "ARCHIVED";
+  statement: string;
+  supportText: string | null;
+  validatedAt: Date | null;
+  publishedAt: Date | null;
+  assetsCount: number;
+};
+
+export type IdempotentQuestionWritePlan =
+  | {
+      action: "CREATE";
+      status: "PUBLISHED" | "AWAITING_REVIEW";
+      statement: string;
+      supportText: string | null;
+      validatedAt: Date | null;
+      publishedAt: Date | null;
+    }
+  | {
+      action: "PRESERVE_EXISTING";
+      reason: string;
+    }
+  | {
+      action: "UPDATE_PENDING";
+      status: "PUBLISHED" | "AWAITING_REVIEW" | "ARCHIVED";
+      statement: string;
+      supportText: string | null;
+      validatedAt: Date | null;
+      publishedAt: Date | null;
+    };
+
+/**
+ * Garante idempotência segura em reexecuções de importadores:
+ * - Registros já PUBLISHED nunca são rebaixados para AWAITING_REVIEW pela ausência de nova revisão,
+ *   nunca perdem publishedAt/validatedAt e nunca têm supportText/assets migrados sobrescritos.
+ * - Novos registros obedecem estritamente à PublicationPolicyEvaluation.
+ * - Registros pendentes (DRAFT/AWAITING_REVIEW) só podem ser atualizados sem sobrescrever
+ *   supportText limpo quando já existem QuestionAsset migrados.
+ */
+export function resolveIdempotentQuestionWrite(params: {
+  existing: ExistingQuestionSnapshot | null;
+  incomingStatement: string;
+  incomingSupportText: string | null;
+  policy: PublicationPolicyEvaluation;
+  now?: Date;
+}): IdempotentQuestionWritePlan {
+  const { existing, incomingStatement, incomingSupportText, policy } = params;
+  const now = params.now ?? new Date();
+
+  if (policy.targetQuestionStatus === "REJECTED") {
+    return {
+      action: "PRESERVE_EXISTING",
+      reason: "Item rejeitado pela validação estrutural; nenhuma escrita permitida.",
+    };
+  }
+
+  if (!existing) {
+    const isPub = policy.allowedToPublish && policy.targetQuestionStatus === "PUBLISHED";
+    return {
+      action: "CREATE",
+      status: isPub ? "PUBLISHED" : "AWAITING_REVIEW",
+      statement: incomingStatement,
+      supportText: incomingSupportText,
+      validatedAt: isPub ? now : null,
+      publishedAt: isPub ? now : null,
+    };
+  }
+
+  // Registros históricos já publicados são imutáveis frente a reexecuções automáticas de importação
+  if (existing.status === "PUBLISHED") {
+    return {
+      action: "PRESERVE_EXISTING",
+      reason:
+        "Questão já publicada (PUBLISHED) preservada integralmente (status, publishedAt, enunciado, texto de apoio e QuestionAsset intactos).",
+    };
+  }
+
+  // Registro ainda não publicado: atualizar apenas sem sobrescrever assets/supportText já higienizados
+  const shouldKeepExistingSupport =
+    existing.assetsCount > 0 &&
+    Boolean(incomingSupportText && /!\[[^\]]*\]\(\/images\//.test(incomingSupportText));
+
+  const isPub = policy.allowedToPublish && policy.targetQuestionStatus === "PUBLISHED";
+  return {
+    action: "UPDATE_PENDING",
+    status: isPub ? "PUBLISHED" : existing.status === "ARCHIVED" ? "ARCHIVED" : "AWAITING_REVIEW",
+    statement: incomingStatement,
+    supportText: shouldKeepExistingSupport ? existing.supportText : incomingSupportText,
+    validatedAt: isPub ? (existing.validatedAt ?? now) : existing.validatedAt,
+    publishedAt: isPub ? (existing.publishedAt ?? now) : existing.publishedAt,
+  };
+}
+
 /**
  * Resolve a quantidade oficial esperada de questões priorizando:
  * 1) ExamForm.expectedQuestionCount (ex.: caderno específico)

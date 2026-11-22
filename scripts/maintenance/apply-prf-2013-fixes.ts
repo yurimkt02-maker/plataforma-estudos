@@ -4,15 +4,21 @@ dotenv.config({ path: [".env.local", ".env"] });
 import { prisma } from "../../src/lib/db/prisma";
 
 /**
- * CORREÇÃO CONTROLADA E REVERSÍVEL DA PRF 2013:
- * 1) Migra as 16 referências visuais (7 PNGs em /images/questions/prf-2013/) de Markdown
- *    em supportText para registros reais em QuestionAsset + limpa o texto de apoio.
+ * CORREÇÃO CONTROLADA, CIRÚRGICA E IDEMPOTENTE DA PRF 2013:
+ * 1) Migra as 16 associações visuais (7 PNGs em /images/questions/prf-2013/) de Markdown
+ *    em supportText para registros QuestionAsset + limpa apenas o Markdown bruto sem apagar texto de apoio.
  * 2) Corrige as 13 classificações auditadas pelo caderno oficial (#67, #69–#73, #75, #77,
- *    #86–#88, #97–#98), criando o assunto filho `legislacao-penal-especial-prf` sob `direito-penal`.
- *
- * Modo padrão: --dry-run (executa simulação transacional REAL com rollback forçado).
- * Somente persiste quando executado explicitamente com `--apply` após autorização.
+ *    #86–#88, #97–#98) SEM apagar vínculos adicionais legítimos (remove apenas `crimes-de-transito`
+ *    e `legislacao-de-transito-ctb`, garantindo exatamente 1 vínculo principal consistente).
+ * 3) Verifica se cada questão pertence a outras edições antes de alterar.
+ * 4) Modo padrão: --dry-run (executa 2 passagens dentro da mesma transação com ROLLBACK forçado,
+ *    comprovando idempotência e zero alterações persistidas).
  */
+
+export const WRONG_PRF2013_TRAFFIC_SLUGS = new Set([
+  "crimes-de-transito",
+  "legislacao-de-transito-ctb",
+]);
 
 export const PRF_2013_AUDITED_CLASSIFICATION_FIXES: Array<{
   originalNumber: number;
@@ -31,9 +37,61 @@ export const PRF_2013_AUDITED_CLASSIFICATION_FIXES: Array<{
   { originalNumber: 86, targetSubjectSlug: "legislacao-penal-especial-prf", targetParentSlug: "direito-penal", justification: "Abuso de autoridade — exigência de dolo vs. modalidade culposa (Legislação Penal Especial)." },
   { originalNumber: 87, targetSubjectSlug: "legislacao-penal-especial-prf", targetParentSlug: "direito-penal", justification: "Lei de Drogas — consumo/posse de substância entorpecente (Lei nº 11.343/2006, art. 28)." },
   { originalNumber: 88, targetSubjectSlug: "legislacao-penal-especial-prf", targetParentSlug: "direito-penal", justification: "Lei das Contravenções Penais — uso ilegítimo de uniforme público (DL nº 3.688/1941, art. 46)." },
-  { originalNumber: 97, targetSubjectSlug: "direitos-e-garantias-fundamentais", targetParentSlug: "direito-constitucional", justification: "Direitos Humanos / Práticas policiais no espaço público — vedação a disparo de advertência (Portaria Interministerial nº 4.226/2010)." },
-  { originalNumber: 98, targetSubjectSlug: "direitos-e-garantias-fundamentais", targetParentSlug: "direito-constitucional", justification: "Direitos Humanos / Uso diferenciado da força — emprego de arma de fogo contra veículo em fuga (Portaria Interministerial nº 4.226/2010)." },
+  { originalNumber: 97, targetSubjectSlug: "direitos-humanos-e-uso-da-forca", targetParentSlug: "direito-constitucional", justification: "Direitos Humanos / Práticas policiais no espaço público — vedação a disparo de advertência para o alto (Portaria Interministerial nº 4.226/2010)." },
+  { originalNumber: 98, targetSubjectSlug: "direitos-humanos-e-uso-da-forca", targetParentSlug: "direito-constitucional", justification: "Direitos Humanos / Uso diferenciado da força — emprego de arma de fogo contra veículo em fuga sem risco imediato (Portaria Interministerial nº 4.226/2010)." },
 ];
+
+export interface ExistingSubjectLink {
+  subjectId: string;
+  subjectSlug: string;
+  isPrimary: boolean;
+}
+
+export interface TargetedSubjectUpdatePlan {
+  subjectIdsToRemove: string[];
+  subjectIdsToDemotePrimary: string[];
+  subjectToUpsertPrimary: string;
+  subjectToUpsertParent: string;
+  preservedAdditionalSlugs: string[];
+}
+
+/**
+ * Calcula a substituição cirúrgica dos vínculos incorretos sem apagar vínculos legítimos adicionais,
+ * garantindo exatamente 1 vínculo principal (`isPrimary: true`) e idempotência total.
+ */
+export function computeTargetedSubjectUpdate(params: {
+  existingLinks: ExistingSubjectLink[];
+  wrongSlugs: Set<string>;
+  targetChildId: string;
+  targetParentId: string;
+}): TargetedSubjectUpdatePlan {
+  const { existingLinks, wrongSlugs, targetChildId, targetParentId } = params;
+
+  const subjectIdsToRemove: string[] = [];
+  const subjectIdsToDemotePrimary: string[] = [];
+  const preservedAdditionalSlugs: string[] = [];
+
+  for (const link of existingLinks) {
+    if (wrongSlugs.has(link.subjectSlug)) {
+      subjectIdsToRemove.push(link.subjectId);
+      continue;
+    }
+    if (link.subjectId !== targetChildId && link.subjectId !== targetParentId) {
+      preservedAdditionalSlugs.push(link.subjectSlug);
+    }
+    if (link.isPrimary && link.subjectId !== targetChildId) {
+      subjectIdsToDemotePrimary.push(link.subjectId);
+    }
+  }
+
+  return {
+    subjectIdsToRemove,
+    subjectIdsToDemotePrimary,
+    subjectToUpsertPrimary: targetChildId,
+    subjectToUpsertParent: targetParentId,
+    preservedAdditionalSlugs,
+  };
+}
 
 class DryRunSentinel extends Error {
   constructor(public readonly summary: Record<string, unknown>) {
@@ -41,7 +99,7 @@ class DryRunSentinel extends Error {
   }
 }
 
-async function main(): Promise<void> {
+async function runCli(): Promise<void> {
   const apply = process.argv.includes("--apply");
 
   const instances = await prisma.examQuestionInstance.findMany({
@@ -51,8 +109,9 @@ async function main(): Promise<void> {
     include: {
       question: {
         include: {
-          assets: true,
+          assets: { orderBy: { position: "asc" } },
           subjects: { include: { subject: true } },
+          _count: { select: { examInstances: true } },
         },
       },
     },
@@ -60,99 +119,227 @@ async function main(): Promise<void> {
   });
 
   const instByNum = new Map(instances.map((i) => [i.originalNumber, i]));
-  const direitoPenalRoot = await prisma.subject.findUnique({ where: { slug: "direito-penal" } });
-  if (!direitoPenalRoot) throw new Error("Raiz direito-penal não encontrada.");
+  const [direitoPenalRoot, direitoConstRoot] = await Promise.all([
+    prisma.subject.findUnique({ where: { slug: "direito-penal" } }),
+    prisma.subject.findUnique({ where: { slug: "direito-constitucional" } }),
+  ]);
+  if (!direitoPenalRoot || !direitoConstRoot) {
+    throw new Error("Raízes direito-penal ou direito-constitucional não encontradas.");
+  }
+
+  // Verificar se alguma das 13 questões está vinculada a outras edições
+  const sharedAcrossEditions: number[] = [];
+  for (const fix of PRF_2013_AUDITED_CLASSIFICATION_FIXES) {
+    const inst = instByNum.get(fix.originalNumber);
+    if (inst && inst.question._count.examInstances > 1) {
+      sharedAcrossEditions.push(fix.originalNumber);
+    }
+  }
+  if (sharedAcrossEditions.length > 0) {
+    throw new Error(
+      `Abortado: itens [${sharedAcrossEditions.join(", ")}] estão vinculados a múltiplas edições.`
+    );
+  }
 
   try {
-    await prisma.$transaction(async (tx) => {
-      // 1. Garantir assunto filho de Legislação Penal Especial sob Direito Penal
-      await tx.subject.upsert({
-        where: { slug: "legislacao-penal-especial-prf" },
-        update: { parentId: direitoPenalRoot.id },
-        create: {
-          slug: "legislacao-penal-especial-prf",
-          name: "Legislação Penal Especial (Drogas, Armas, Abuso de Autoridade e Contravenções)",
-          parentId: direitoPenalRoot.id,
-          isLegalSubject: true,
-          displayOrder: 12,
-        },
-      });
+    await prisma.$transaction(
+      async (tx) => {
+        // 1. Garantir os 2 novos assuntos filhos (sem duplicar)
+        await tx.subject.upsert({
+          where: { slug: "legislacao-penal-especial-prf" },
+          update: { parentId: direitoPenalRoot.id },
+          create: {
+            slug: "legislacao-penal-especial-prf",
+            name: "Legislação Penal Especial (Drogas, Armas, Abuso de Autoridade e Contravenções)",
+            parentId: direitoPenalRoot.id,
+            isLegalSubject: true,
+            displayOrder: 12,
+          },
+        });
+        await tx.subject.upsert({
+          where: { slug: "direitos-humanos-e-uso-da-forca" },
+          update: { parentId: direitoConstRoot.id },
+          create: {
+            slug: "direitos-humanos-e-uso-da-forca",
+            name: "Direitos Humanos e Uso Diferenciado da Força (Portaria Interministerial nº 4.226/2010)",
+            parentId: direitoConstRoot.id,
+            isLegalSubject: true,
+            displayOrder: 12,
+          },
+        });
 
-      const allSubjects = await tx.subject.findMany();
-      const subjBySlug = new Map(allSubjects.map((s) => [s.slug, s]));
+        const allSubjects = await tx.subject.findMany();
+        const subjBySlug = new Map(allSubjects.map((s) => [s.slug, s]));
 
-      // 2. Migrar 16 itens visuais para QuestionAsset + limpar Markdown do supportText
-      let assetsMigrated = 0;
-      for (const inst of instances) {
-        const rawSupport = inst.question.supportText ?? "";
-        const imgRegex = /!\[([^\]]*)\]\((\/images\/questions\/prf-2013\/[^)]+)\)/g;
-        const matches = [...rawSupport.matchAll(imgRegex)];
-        if (matches.length === 0) continue;
+        const visualInstanceIds = instances
+          .filter((i) =>
+            (i.question.supportText ?? "").includes("/images/questions/prf-2013/") ||
+            i.question.assets.length > 0
+          )
+          .map((i) => i.question.id);
+        const visualNumByQId = new Map(
+          instances.map((i) => [i.question.id, i.originalNumber])
+        );
 
-        for (let idx = 0; idx < matches.length; idx++) {
-          const alt = matches[idx]![1] ?? "";
-          const url = matches[idx]![2]!;
-          const alreadyExists = inst.question.assets.some(
-            (a) => a.objectUrl === url || a.storagePath === url
-          );
-          if (!alreadyExists) {
-            await tx.questionAsset.create({
-              data: {
+        async function executeSinglePass(): Promise<{
+          assetsMigrated: number;
+          supportTextsCleaned: number;
+          wrongLinksRemoved: number;
+          classificationsChecked: number;
+        }> {
+          let assetsMigrated = 0;
+          let supportTextsCleaned = 0;
+          let wrongLinksRemoved = 0;
+
+          // A. Migrar imagens Markdown -> QuestionAsset (1 query em lote, idempotente)
+          const freshVisualQuestions = await tx.question.findMany({
+            where: { id: { in: visualInstanceIds } },
+            include: { assets: true },
+          });
+
+          for (const freshQ of freshVisualQuestions) {
+            const origNum = visualNumByQId.get(freshQ.id) ?? 0;
+            const rawSupport = freshQ.supportText ?? "";
+            const imgRegex = /!\[([^\]]*)\]\((\/images\/questions\/prf-2013\/[^)]+)\)/g;
+            const matches = [...rawSupport.matchAll(imgRegex)];
+            if (matches.length === 0) continue;
+
+            for (let idx = 0; idx < matches.length; idx++) {
+              const alt = matches[idx]![1] ?? "";
+              const url = matches[idx]![2]!;
+              const alreadyExists = freshQ.assets.some(
+                (a) => a.objectUrl === url || a.storagePath === url.replace(/^\//, "")
+              );
+              if (!alreadyExists) {
+                await tx.questionAsset.create({
+                  data: {
+                    questionId: freshQ.id,
+                    assetType: "IMAGE",
+                    storagePath: url.replace(/^\//, ""),
+                    objectUrl: url,
+                    caption: alt || `Figura oficial — PRF 2013 Item #${origNum}`,
+                    position: idx + 1,
+                  },
+                });
+                assetsMigrated++;
+              }
+            }
+
+            const cleanedSupport = rawSupport
+              .replace(/!\[[^\]]*\]\(\/images\/questions\/prf-2013\/[^)]+\)\s*/g, "")
+              .trim();
+            if (cleanedSupport !== rawSupport) {
+              await tx.question.update({
+                where: { id: freshQ.id },
+                data: { supportText: cleanedSupport || null },
+              });
+              supportTextsCleaned++;
+            }
+          }
+
+          // B. Substituir cirurgicamente apenas os vínculos incorretos das 13 questões
+          for (const fix of PRF_2013_AUDITED_CLASSIFICATION_FIXES) {
+            const inst = instByNum.get(fix.originalNumber);
+            const childSubj = subjBySlug.get(fix.targetSubjectSlug);
+            const parentSubj = subjBySlug.get(fix.targetParentSlug);
+            if (!inst || !childSubj || !parentSubj) {
+              throw new Error(`Item #${fix.originalNumber} ou assunto ${fix.targetSubjectSlug} ausente.`);
+            }
+
+            const liveLinks = await tx.questionSubject.findMany({
+              where: { questionId: inst.question.id },
+              include: { subject: true },
+            });
+
+            const plan = computeTargetedSubjectUpdate({
+              existingLinks: liveLinks.map((l) => ({
+                subjectId: l.subjectId,
+                subjectSlug: l.subject.slug,
+                isPrimary: l.isPrimary,
+              })),
+              wrongSlugs: WRONG_PRF2013_TRAFFIC_SLUGS,
+              targetChildId: childSubj.id,
+              targetParentId: parentSubj.id,
+            });
+
+            if (plan.subjectIdsToRemove.length > 0) {
+              const delRes = await tx.questionSubject.deleteMany({
+                where: {
+                  questionId: inst.question.id,
+                  subjectId: { in: plan.subjectIdsToRemove },
+                },
+              });
+              wrongLinksRemoved += delRes.count;
+            }
+
+            if (plan.subjectIdsToDemotePrimary.length > 0) {
+              await tx.questionSubject.updateMany({
+                where: {
+                  questionId: inst.question.id,
+                  subjectId: { in: plan.subjectIdsToDemotePrimary },
+                },
+                data: { isPrimary: false },
+              });
+            }
+
+            await tx.questionSubject.upsert({
+              where: {
+                questionId_subjectId: {
+                  questionId: inst.question.id,
+                  subjectId: plan.subjectToUpsertPrimary,
+                },
+              },
+              update: { isPrimary: true },
+              create: {
                 questionId: inst.question.id,
-                assetType: "IMAGE",
-                storagePath: url.replace(/^\//, ""),
-                objectUrl: url,
-                caption: alt || `Figura oficial — PRF 2013 Item #${inst.originalNumber}`,
-                position: idx + 1,
+                subjectId: plan.subjectToUpsertPrimary,
+                isPrimary: true,
               },
             });
-            assetsMigrated++;
+
+            await tx.questionSubject.upsert({
+              where: {
+                questionId_subjectId: {
+                  questionId: inst.question.id,
+                  subjectId: plan.subjectToUpsertParent,
+                },
+              },
+              update: { isPrimary: false },
+              create: {
+                questionId: inst.question.id,
+                subjectId: plan.subjectToUpsertParent,
+                isPrimary: false,
+              },
+            });
           }
+
+          return {
+            assetsMigrated,
+            supportTextsCleaned,
+            wrongLinksRemoved,
+            classificationsChecked: PRF_2013_AUDITED_CLASSIFICATION_FIXES.length,
+          };
         }
 
-        const cleanedSupport = rawSupport
-          .replace(/!\[[^\]]*\]\(\/images\/questions\/prf-2013\/[^)]+\)\s*/g, "")
-          .trim();
+        const pass1 = await executeSinglePass();
+        // Em dry-run, executamos uma 2ª passagem na mesma transação para provar idempotência!
+        const pass2 = !apply ? await executeSinglePass() : null;
 
-        await tx.question.update({
-          where: { id: inst.question.id },
-          data: { supportText: cleanedSupport || null },
-        });
-      }
+        const summary = {
+          mode: apply ? "APPLIED" : "DRY_RUN_ROLLED_BACK",
+          sharedAcrossEditionsCount: sharedAcrossEditions.length,
+          pass1,
+          pass2IdempotencyProof: pass2,
+        };
 
-      // 3. Corrigir as 13 classificações auditadas
-      let classificationsUpdated = 0;
-      for (const fix of PRF_2013_AUDITED_CLASSIFICATION_FIXES) {
-        const inst = instByNum.get(fix.originalNumber);
-        const childSubj = subjBySlug.get(fix.targetSubjectSlug);
-        const parentSubj = subjBySlug.get(fix.targetParentSlug);
-        if (!inst || !childSubj || !parentSubj) {
-          throw new Error(`Item #${fix.originalNumber} ou assunto ${fix.targetSubjectSlug} não encontrado.`);
-        }
-
-        await tx.questionSubject.deleteMany({
-          where: { questionId: inst.question.id },
-        });
-        await tx.questionSubject.createMany({
-          data: [
-            { questionId: inst.question.id, subjectId: childSubj.id, isPrimary: true },
-            { questionId: inst.question.id, subjectId: parentSubj.id, isPrimary: false },
-          ],
-        });
-        classificationsUpdated++;
-      }
-
-      const summary = {
-        mode: apply ? "APPLIED" : "DRY_RUN_ROLLED_BACK",
-        assetsMigrated,
-        classificationsUpdated,
-      };
-      if (!apply) throw new DryRunSentinel(summary);
-      console.info("=== CORREÇÕES PRF 2013 APLICADAS ===", summary);
-    }, { timeout: 30000 });
+        if (!apply) throw new DryRunSentinel(summary);
+        console.info("=== CORREÇÕES CIRÚRGICAS PRF 2013 APLICADAS ===", summary);
+      },
+      { timeout: 30000 }
+    );
   } catch (err) {
     if (err instanceof DryRunSentinel) {
-      console.info("=== SIMULAÇÃO TRANSACIONAL PRF 2013 (ROLLBACK CONFIRMADO) ===");
+      console.info("=== SIMULAÇÃO TRANSACIONAL PRF 2013 (2 PASSAGENS + ROLLBACK OK) ===");
       console.info(err.summary);
       return;
     }
@@ -160,11 +347,13 @@ async function main(): Promise<void> {
   }
 }
 
-main()
-  .catch((err) => {
-    console.error(err);
-    process.exit(1);
-  })
-  .finally(async () => {
-    await prisma.$disconnect();
-  });
+if (require.main === module) {
+  runCli()
+    .catch((err) => {
+      console.error(err);
+      process.exit(1);
+    })
+    .finally(async () => {
+      await prisma.$disconnect();
+    });
+}
