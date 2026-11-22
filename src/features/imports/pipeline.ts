@@ -218,6 +218,70 @@ export function validateExtractedQuestionItem(
   };
 }
 
+export type PublicationPolicyEvaluation = {
+  allowedToPublish: boolean;
+  targetQuestionStatus: "PUBLISHED" | "AWAITING_REVIEW" | "REJECTED";
+  blockingReasons: string[];
+};
+
+/**
+ * Regra unificada de publicação para scripts e fluxo administrativo:
+ * impede que qualquer item seja promovido a PUBLISHED sem:
+ * 1) validação estrutural aprovada e sem pendência visual/ambígua;
+ * 2) documento do caderno de prova verificado (VERIFIED);
+ * 3) documento do gabarito oficial definitivo verificado (VERIFIED);
+ * 4) revisão humana efetiva registrada (nunca inferida automaticamente).
+ */
+export function enforceImportPublicationPolicy(params: {
+  validation: ValidatedImportItemResult;
+  hasVerifiedHumanReview: boolean;
+  examDocumentVerified: boolean;
+  answerKeyDocumentVerified: boolean;
+}): PublicationPolicyEvaluation {
+  const {
+    validation,
+    hasVerifiedHumanReview,
+    examDocumentVerified,
+    answerKeyDocumentVerified,
+  } = params;
+
+  if (!validation.isValid) {
+    return {
+      allowedToPublish: false,
+      targetQuestionStatus: "REJECTED",
+      blockingReasons: validation.issues.map((i) => i.message),
+    };
+  }
+
+  const blockingReasons: string[] = [];
+  if (!examDocumentVerified) {
+    blockingReasons.push("Documento oficial do caderno de prova não está marcado como VERIFIED.");
+  }
+  if (!answerKeyDocumentVerified) {
+    blockingReasons.push("Documento oficial do gabarito definitivo não está marcado como VERIFIED.");
+  }
+  if (validation.requiresHumanReview) {
+    blockingReasons.push("Item sinalizado com pendência visual ou ambiguidade que exige conferência humana.");
+  }
+  if (!hasVerifiedHumanReview) {
+    blockingReasons.push("Revisão humana efetiva ausente (ContentReviewLog obrigatório antes de publicar).");
+  }
+
+  if (blockingReasons.length > 0) {
+    return {
+      allowedToPublish: false,
+      targetQuestionStatus: "AWAITING_REVIEW",
+      blockingReasons,
+    };
+  }
+
+  return {
+    allowedToPublish: true,
+    targetQuestionStatus: "PUBLISHED",
+    blockingReasons: [],
+  };
+}
+
 /**
  * Resolve a quantidade oficial esperada de questões priorizando:
  * 1) ExamForm.expectedQuestionCount (ex.: caderno específico)

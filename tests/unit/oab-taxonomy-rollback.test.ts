@@ -4,6 +4,10 @@ import {
   computeSnapshotChecksum,
   type OabSubjectLinkSnapshot,
 } from "../../scripts/maintenance/oab-subjects-snapshot-and-rollback";
+import {
+  enforceImportPublicationPolicy,
+  validateExtractedQuestionItem,
+} from "../../src/features/imports/pipeline";
 
 describe("Snapshot e Rollback de Taxonomia OAB", () => {
   const sampleSnapshotLinks: OabSubjectLinkSnapshot[] = [
@@ -94,5 +98,58 @@ describe("Snapshot e Rollback de Taxonomia OAB", () => {
     expect(postRollbackDiff.toInsert).toHaveLength(0);
     expect(postRollbackDiff.toUpdatePrimary).toHaveLength(0);
     expect(restored).toHaveLength(sampleSnapshotLinks.length);
+  });
+});
+
+describe("Regra Unificada de Publicação (enforceImportPublicationPolicy)", () => {
+  const validItem = validateExtractedQuestionItem({
+    originalNumber: 1,
+    questionType: "TRUE_FALSE",
+    statement: "Enunciado oficial completo com mais de vinte caracteres para validação estrutural.",
+    options: [
+      { label: "C", content: "Certo" },
+      { label: "E", content: "Errado" },
+    ],
+    officialAnswer: "C",
+    isAnnulled: false,
+    subjectSlug: "direitos-e-garantias-fundamentais",
+    pageNumber: 2,
+    sourceDocumentSha256: "a".repeat(64),
+    examFormVersionLabel: "Tipo I",
+  });
+
+  it("bloqueia publicação automática quando revisão humana efetiva está ausente", () => {
+    const res = enforceImportPublicationPolicy({
+      validation: validItem,
+      hasVerifiedHumanReview: false,
+      examDocumentVerified: true,
+      answerKeyDocumentVerified: true,
+    });
+    expect(res.allowedToPublish).toBe(false);
+    expect(res.targetQuestionStatus).toBe("AWAITING_REVIEW");
+    expect(res.blockingReasons.some((r) => r.includes("Revisão humana efetiva"))).toBe(true);
+  });
+
+  it("bloqueia publicação quando documento do gabarito definitivo não está VERIFIED", () => {
+    const res = enforceImportPublicationPolicy({
+      validation: validItem,
+      hasVerifiedHumanReview: true,
+      examDocumentVerified: true,
+      answerKeyDocumentVerified: false,
+    });
+    expect(res.allowedToPublish).toBe(false);
+    expect(res.targetQuestionStatus).toBe("AWAITING_REVIEW");
+  });
+
+  it("permite PUBLISHED somente quando validação estrutural, documentos oficiais e revisão humana estão completos", () => {
+    const res = enforceImportPublicationPolicy({
+      validation: validItem,
+      hasVerifiedHumanReview: true,
+      examDocumentVerified: true,
+      answerKeyDocumentVerified: true,
+    });
+    expect(res.allowedToPublish).toBe(true);
+    expect(res.targetQuestionStatus).toBe("PUBLISHED");
+    expect(res.blockingReasons).toHaveLength(0);
   });
 });

@@ -6,6 +6,7 @@ import path from "node:path";
 import { prisma } from "../../src/lib/db/prisma";
 import {
   auditExamCompleteness,
+  enforceImportPublicationPolicy,
   validateExtractedQuestionItem,
 } from "../../src/features/imports/pipeline";
 
@@ -295,10 +296,18 @@ async function main(): Promise<void> {
       continue;
     }
 
+    // Regra unificada: scripts nunca publicam automaticamente sem revisão humana efetiva.
+    const pubPolicy = enforceImportPublicationPolicy({
+      validation,
+      hasVerifiedHumanReview: false,
+      examDocumentVerified: examDoc.verificationStatus === "VERIFIED",
+      answerKeyDocumentVerified: keyDoc.verificationStatus === "VERIFIED",
+    });
+
     const qStatus =
-      validation.targetStatus === "AWAITING_REVIEW"
-        ? "AWAITING_REVIEW"
-        : "PUBLISHED";
+      pubPolicy.targetQuestionStatus === "PUBLISHED"
+        ? "PUBLISHED"
+        : "AWAITING_REVIEW";
 
     const question = await prisma.question.upsert({
       where: { canonicalHash: validation.canonicalHash },
