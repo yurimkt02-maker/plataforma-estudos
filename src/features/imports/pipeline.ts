@@ -377,6 +377,19 @@ export function resolveIdempotentQuestionWrite(params: {
 }
 
 /**
+ * Bloqueio incondicional para scripts históricos de carga direta em `PUBLISHED`.
+ * Não aceita flags de bypass em linha de comando: novas publicações devem
+ * passar obrigatoriamente pelo fluxo de curadoria com revisão humana efetiva.
+ */
+export function assertLegacyDirectPublishBlocked(scriptName: string): void {
+  throw new Error(
+    `BLOQUEADO INCONDICIONALMENTE PELA POLÍTICA DE CURADORIA (${scriptName}): ` +
+      "este script histórico não pode mais gravar status PUBLISHED automaticamente. " +
+      "O arquivo é mantido apenas para auditoria somente leitura; utilize /admin/importacoes e enforceImportPublicationPolicy."
+  );
+}
+
+/**
  * Resolve a quantidade oficial esperada de questões priorizando:
  * 1) ExamForm.expectedQuestionCount (ex.: caderno específico)
  * 2) ExamEdition.expectedQuestionCount (ex.: TJSP 2025 = 70 vs TJSP 2024 = 100)

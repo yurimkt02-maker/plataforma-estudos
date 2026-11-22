@@ -437,12 +437,10 @@ async function importSingleOabEdition(
   };
 }
 
+import { assertLegacyDirectPublishBlocked } from "../../src/features/imports/pipeline";
+
 async function main(): Promise<void> {
-  if (!process.argv.includes("--allow-legacy-historical-script")) {
-    throw new Error(
-      "BLOQUEADO PELA POLÍTICA DE CURADORIA: script histórico desativado para impedir gravação direta de status PUBLISHED sem revisão humana (use /admin/importacoes e enforceImportPublicationPolicy)."
-    );
-  }
+  assertLegacyDirectPublishBlocked("scripts/imports/import-oab-2023-2026-batch.ts");
   console.info("=== EXPANSÃO OAB 2023–2026 NO PRISMA POSTGRES ===\n");
 
   // 1. Seed das 20 disciplinas oficiais da OAB

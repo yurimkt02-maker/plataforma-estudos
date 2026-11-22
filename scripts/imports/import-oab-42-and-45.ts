@@ -298,12 +298,10 @@ async function importEdition(
   };
 }
 
+import { assertLegacyDirectPublishBlocked } from "../../src/features/imports/pipeline";
+
 async function main(): Promise<void> {
-  if (!process.argv.includes("--allow-legacy-historical-script")) {
-    throw new Error(
-      "BLOQUEADO PELA POLÍTICA DE CURADORIA: script histórico desativado para impedir gravação direta de status PUBLISHED sem revisão humana (use /admin/importacoes e enforceImportPublicationPolicy)."
-    );
-  }
+  assertLegacyDirectPublishBlocked("scripts/imports/import-oab-42-and-45.ts");
   const subjectsBySlug = new Map(
     (await prisma.subject.findMany({ select: { id: true, slug: true } })).map((s) => [
       s.slug,

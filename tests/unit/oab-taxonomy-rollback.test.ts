@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   computeRollbackPlan,
@@ -15,6 +17,7 @@ import {
   WRONG_PRF2013_TRAFFIC_SLUGS,
 } from "../../scripts/maintenance/apply-prf-2013-fixes";
 import {
+  assertLegacyDirectPublishBlocked,
   enforceImportPublicationPolicy,
   resolveIdempotentQuestionWrite,
   validateExtractedQuestionItem,
@@ -313,5 +316,28 @@ describe("Regra Unificada de Publicação e Idempotência PRF 2013", () => {
     expect(plan.preservedAdditionalSlugs).toEqual(["etica-no-servico-publico"]);
     expect(plan.subjectToUpsertPrimary).toBe("s-teoria-crime");
     expect(plan.subjectToUpsertParent).toBe("s-penal-root");
+  });
+});
+
+describe("Bloqueio Incondicional de Scripts Históricos de Publicação Direta", () => {
+  const legacyScripts = [
+    "scripts/imports/import-multi-career-real.ts",
+    "scripts/imports/import-oab-2023-2026-batch.ts",
+    "scripts/imports/import-oab-42-and-45.ts",
+    "scripts/imports/remediate-and-import-complete.ts",
+  ];
+
+  it("assertLegacyDirectPublishBlocked sempre lança erro incondicional", () => {
+    expect(() => assertLegacyDirectPublishBlocked("legacy-test.ts")).toThrow(
+      /BLOQUEADO INCONDICIONALMENTE PELA POLÍTICA DE CURADORIA/
+    );
+  });
+
+  it("todos os 4 scripts históricos removem qualquer flag de bypass e invocam assertLegacyDirectPublishBlocked", () => {
+    for (const relPath of legacyScripts) {
+      const src = fs.readFileSync(path.join(process.cwd(), relPath), "utf-8");
+      expect(src).not.toContain("--allow-legacy-historical-script");
+      expect(src).toContain("assertLegacyDirectPublishBlocked");
+    }
   });
 });

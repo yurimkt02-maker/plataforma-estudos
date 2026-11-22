@@ -391,12 +391,10 @@ async function importOfficialPayload(params: {
   };
 }
 
+import { assertLegacyDirectPublishBlocked } from "../../src/features/imports/pipeline";
+
 async function main(): Promise<void> {
-  if (!process.argv.includes("--allow-legacy-historical-script")) {
-    throw new Error(
-      "BLOQUEADO PELA POLÍTICA DE CURADORIA: script histórico desativado para impedir gravação direta de status PUBLISHED sem revisão humana (use /admin/importacoes e enforceImportPublicationPolicy)."
-    );
-  }
+  assertLegacyDirectPublishBlocked("scripts/imports/remediate-and-import-complete.ts");
   console.info("=== 1. SANEAMENTO DA AUDITORIA DE GABARITOS E PROVENIÊNCIA ===\n");
 
   const owner = await prisma.user.findFirst();

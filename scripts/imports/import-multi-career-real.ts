@@ -511,12 +511,10 @@ async function importExamPayload(
   };
 }
 
+import { assertLegacyDirectPublishBlocked } from "../../src/features/imports/pipeline";
+
 async function main(): Promise<void> {
-  if (!process.argv.includes("--allow-legacy-historical-script")) {
-    throw new Error(
-      "BLOQUEADO PELA POLÍTICA DE CURADORIA: script histórico desativado para impedir gravação direta de status PUBLISHED sem revisão humana (use /admin/importacoes e enforceImportPublicationPolicy)."
-    );
-  }
+  assertLegacyDirectPublishBlocked("scripts/imports/import-multi-career-real.ts");
   console.info("=== ALIMENTAÇÃO MULTI-CARREIRA DO BANCO DE QUESTÕES REAIS ===");
 
   // 1. Reclassificar explicações determinísticas anteriores para PENDING_VERIFICATION (sem AI_API_KEY)
