@@ -79,6 +79,10 @@ export function validateApprovedLoteASelection(params: {
     errors.push("Checksum SHA-256 do manifesto de IDs aprovados é inválido.");
   }
 
+  if (manifest.approvedQuestionIds.length === 0) {
+    errors.push("Manifesto de aprovação não pode estar vazio (nenhum ID selecionado).");
+  }
+
   if (manifest.approvedQuestionIds.length !== manifest.expectedCount) {
     errors.push(
       `Contagem divergente no manifesto: expectedCount=${manifest.expectedCount}, ids=${manifest.approvedQuestionIds.length}.`
@@ -106,7 +110,7 @@ export function validateApprovedLoteASelection(params: {
 
     const candidate = cleanById.get(id);
     if (!candidate) {
-      errors.push(`ID ${id} não corresponde a nenhum item da prévia aprovada do Lote A.`);
+      errors.push(`ID ${id} não corresponde a nenhum item da prévia elegível (53 limpos) do Lote A.`);
       continue;
     }
 
@@ -118,12 +122,6 @@ export function validateApprovedLoteASelection(params: {
     }
 
     approvedItems.push(candidate);
-  }
-
-  if (approvedItems.length !== cleanCandidates.length && errors.length === 0) {
-    errors.push(
-      `Seleção diverge da prévia limpa completa (${approvedItems.length} aprovados vs ${cleanCandidates.length} na prévia).`
-    );
   }
 
   return {

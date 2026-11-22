@@ -183,22 +183,22 @@ describe("Guardas de Segurança — OAB Lote A (53 limpos vs 12 ambíguos bloque
     expect(staleDb.errors.some((e) => e.includes("Revalidação falhou"))).toBe(true);
   });
 
-  it("aceita exatamente a seleção limpa aprovada e revalidada", () => {
-    const ids = ["q-clean-1", "q-clean-2"];
-    const ok = validateApprovedLoteASelection({
+  it("aceita exatamente a seleção limpa aprovada e revalidada, inclusive por subconjunto parcial", () => {
+    const subsetIds = ["q-clean-1"];
+    const okSubset = validateApprovedLoteASelection({
       cleanCandidates: clean,
       ambiguousItems: amb,
       manifest: {
         batch: "OAB_LOTE_A",
         approvedByHuman: true,
-        expectedCount: 2,
-        approvedQuestionIds: ids,
-        checksumSha256: computeApprovedIdsChecksum(ids),
+        expectedCount: 1,
+        approvedQuestionIds: subsetIds,
+        checksumSha256: computeApprovedIdsChecksum(subsetIds),
       },
-      liveEleitoralQuestionIds: new Set(ids),
+      liveEleitoralQuestionIds: new Set(["q-clean-1", "q-clean-2"]),
     });
-    expect(ok.valid).toBe(true);
-    expect(ok.approvedItems).toHaveLength(2);
+    expect(okSubset.valid).toBe(true);
+    expect(okSubset.approvedItems.map((i) => i.questionId)).toEqual(["q-clean-1"]);
   });
 });
 

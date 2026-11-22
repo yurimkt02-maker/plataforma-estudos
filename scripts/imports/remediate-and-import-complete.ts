@@ -392,6 +392,11 @@ async function importOfficialPayload(params: {
 }
 
 async function main(): Promise<void> {
+  if (!process.argv.includes("--allow-legacy-historical-script")) {
+    throw new Error(
+      "BLOQUEADO PELA POLÍTICA DE CURADORIA: script histórico desativado para impedir gravação direta de status PUBLISHED sem revisão humana (use /admin/importacoes e enforceImportPublicationPolicy)."
+    );
+  }
   console.info("=== 1. SANEAMENTO DA AUDITORIA DE GABARITOS E PROVENIÊNCIA ===\n");
 
   const owner = await prisma.user.findFirst();
